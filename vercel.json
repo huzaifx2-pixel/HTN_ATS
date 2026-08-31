@@ -1,0 +1,24 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/sync-website-jobs",
+      "schedule": "0,45 * * * *"
+    },
+    {
+      "path": "/api/cron/sync-gmail",
+      "schedule": "0,45 * * * *"
+    },
+    {
+      "path": "/api/cron/process-email-queue",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/process-scheduled-campaigns",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/run-marketing-automations",
+      "schedule": "0 6 * * *"
+    }
+  ]
+}

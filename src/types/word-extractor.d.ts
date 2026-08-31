@@ -1,0 +1,11 @@
+declare module "word-extractor" {
+  export default class WordExtractor {
+    extract(input: Buffer | string): Promise<{
+      getBody(): string;
+      getFootnotes(): string;
+      getEndnotes(): string;
+      getHeaders(): string;
+      getFooters(): string;
+    }>;
+  }
+}

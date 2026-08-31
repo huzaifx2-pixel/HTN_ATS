@@ -1,0 +1,902 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─── Better Auth ───────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  name          String
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  sessions      Session[]
+  accounts      Account[]
+  members       Member[]
+  invitations   Invitation[]
+
+  ownedJobs     Job[]              @relation("JobOwner")
+  stageChanges  StageHistory[]
+  sentMessages  Message[]
+  channelMembers ChannelMember[]
+  notifications Notification[]
+  auditLogs     AuditLog[]
+  gmailConnections GmailConnection[]
+}
+
+model Session {
+  id                   String   @id @default(cuid())
+  expiresAt            DateTime
+  token                String   @unique
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  ipAddress            String?
+  userAgent            String?
+  userId               String
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activeOrganizationId String?
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@unique([providerId, accountId])
+}
+
+model Verification {
+  id         String    @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime? @default(now())
+  updatedAt  DateTime? @updatedAt
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  logo      String?
+  metadata  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members       Member[]
+  invitations   Invitation[]
+  clients       Client[]
+  jobs          Job[]
+  candidates    Candidate[]
+  candidateDrafts CandidateDraft[]
+  channels      Channel[]
+  emailTemplates EmailTemplate[]
+  referralTemplates ReferralTemplate[]
+  auditLogs     AuditLog[]
+  orgSettings   OrgSettings?
+  jobImportBatches JobImportBatch[]
+  resumeImportBatches ResumeImportBatch[]
+  emailSendQueue EmailSendQueue[]
+}
+
+model Member {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role           MemberRole   @default(RECRUITER)
+  createdAt      DateTime     @default(now())
+
+  @@unique([organizationId, userId])
+  @@index([organizationId])
+  @@index([userId])
+}
+
+model Invitation {
+  id             String           @id @default(cuid())
+  organizationId String
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  email          String
+  role           MemberRole       @default(RECRUITER)
+  status         InvitationStatus @default(PENDING)
+  expiresAt      DateTime
+  inviterId      String
+  inviter        User             @relation(fields: [inviterId], references: [id], onDelete: Cascade)
+  createdAt      DateTime         @default(now())
+
+  @@index([organizationId])
+}
+
+enum MemberRole {
+  OWNER
+  ADMIN
+  RECRUITER
+  VIEWER
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  EXPIRED
+}
+
+// Canonical domain enums (aligned with htn-api Postgres schema)
+enum OrganizationType {
+  COMPANY
+  CLIENT
+  VENDOR
+  MSP
+  UNIVERSITY
+  HOSPITAL
+  PARTNER
+}
+
+enum EmploymentType {
+  FULL_TIME
+  PART_TIME
+  CONTRACT
+  TEMPORARY
+  INTERNSHIP
+  FREELANCE
+  VOLUNTEER
+}
+
+enum WorkplaceType {
+  ON_SITE
+  REMOTE
+  HYBRID
+}
+
+enum JobSource {
+  MICRO1
+  GREENHOUSE
+  LEVER
+  ASHBY
+  WORKDAY
+  LINKEDIN
+  MANUAL
+  OTHER
+}
+
+enum CandidateStatus {
+  NEW
+  ACTIVE
+  INTERVIEWING
+  PLACED
+  INACTIVE
+  ARCHIVED
+}
+
+enum ApplicationSource {
+  CAREERS_SITE
+  RECRUITER
+  REFERRAL
+  IMPORT
+  LINKEDIN
+  OTHER
+}
+
+enum DocumentType {
+  RESUME
+  COVER_LETTER
+  CERTIFICATION
+  PORTFOLIO
+  OTHER
+}
+
+model Client {
+  id             String            @id @default(cuid())
+  organizationId String
+  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  prefix         String
+  logoUrl        String?
+  externalId     String?
+  sourceVersion  String?
+  type           OrganizationType?
+  legalName      String?
+  website        String?
+  linkedinUrl    String?
+  industry       String?
+  description    String?
+  headquarters   String?
+  employeeCount  Int?
+  foundedYear    Int?
+  metadata       Json?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  jobs           Job[]
+  candidates     Candidate[]
+  documents      Document[]
+  prefixRule     ClientPrefixRule?
+
+  @@unique([organizationId, prefix])
+  @@index([organizationId])
+  @@index([externalId])
+  @@index([name])
+}
+
+model ClientPrefixRule {
+  id         String @id @default(cuid())
+  clientId   String @unique
+  client     Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  lastNumber Int    @default(0)
+}
+
+enum JobStatus {
+  OPEN
+  ON_HOLD
+  CLOSED
+  FILLED
+}
+
+model Job {
+  id                      String           @id @default(cuid())
+  organizationId          String
+  organization            Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  clientId                String
+  client                  Client           @relation(fields: [clientId], references: [id])
+  ownerId                 String?
+  owner                   User?            @relation("JobOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  jobCode                 String
+  externalId              String?
+  sourceVersion           String?
+  source                  JobSource?
+  title                   String
+  slug                    String?
+  summary                 String?
+  description             String?
+  descriptionHtml         String?
+  responsibilities        String?
+  requirementsText        String?
+  preferredQualifications String?
+  benefits                String?
+  employmentType          EmploymentType?
+  workplaceType           WorkplaceType?
+  department              String?
+  seniority               String?
+  experienceMin           Int?
+  experienceMax           Int?
+  salaryMin               Decimal?
+  salaryMax               Decimal?
+  salaryCurrency          String?
+  location                String?
+  country                 String?
+  city                    String?
+  timezone                String?
+  remote                  Boolean?
+  referralLink            String?
+  applyUrl                String?
+  canonicalUrl            String?
+  requirements            Json?
+  openings                Int              @default(1)
+  status                  JobStatus        @default(OPEN)
+  dedupeHash              String?
+  importedAt              DateTime?
+  autoEmailEnabled        Boolean          @default(false)
+  autoEmailTemplateId     String?
+  autoEmailMinScore       Int              @default(70)
+  postedAt                DateTime?
+  closedAt                DateTime?
+  expiresAt               DateTime?
+  metadata                Json?
+  structured              Json?
+  parseMetadata           Json?
+  parserVersion           String?
+  booleanSearch           String?
+  booleanSearchUpdatedAt  DateTime?
+  createdAt               DateTime         @default(now())
+  updatedAt               DateTime         @updatedAt
+
+  applications            Application[]
+  matches                 JobMatch[]
+  documents               Document[]
+  emailCampaigns          EmailCampaign[]
+  channels                Channel[]
+  activities              JobActivity[]
+  jobSkills               JobSkill[]
+
+  @@unique([organizationId, jobCode])
+  @@unique([organizationId, source, externalId])
+  @@index([organizationId, status])
+  @@index([organizationId, status, createdAt])
+  @@index([organizationId, status, importedAt])
+  @@index([organizationId, status, closedAt])
+  @@index([organizationId, source])
+  @@index([externalId])
+  @@index([clientId])
+  @@index([dedupeHash])
+  @@index([employmentType])
+  @@index([workplaceType])
+  @@index([postedAt])
+}
+
+model JobImportBatch {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  fileName       String
+  format         String
+  totalRows      Int      @default(0)
+  imported       Int      @default(0)
+  duplicates     Int      @default(0)
+  errors         Int      @default(0)
+  createdAt      DateTime @default(now())
+}
+
+enum ResumeImportStatus {
+  SUCCESS
+  FAILED
+  DUPLICATE
+  SKIPPED
+}
+
+model ResumeImportBatch {
+  id             String             @id @default(cuid())
+  organizationId String
+  organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  candidateId    String?
+  candidate      Candidate?         @relation(fields: [candidateId], references: [id], onDelete: SetNull)
+  fileName       String
+  fileHash       String?
+  source         CandidateSource
+  status         ResumeImportStatus
+  parseError     String?
+  durationMs     Int?
+  duplicateOfId  String?
+  metadata       Json?
+  createdAt      DateTime           @default(now())
+
+  @@index([organizationId, createdAt])
+  @@index([candidateId])
+  @@index([fileHash])
+}
+
+enum EmailQueueStatus {
+  PENDING
+  PROCESSING
+  SENT
+  FAILED
+  CANCELLED
+}
+
+model EmailSendQueue {
+  id             String           @id @default(cuid())
+  organizationId String
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  jobId          String
+  candidateId    String
+  templateId     String
+  senderUserId   String
+  status         EmailQueueStatus @default(PENDING)
+  retryCount     Int              @default(0)
+  maxRetries     Int              @default(3)
+  nextRetryAt    DateTime         @default(now())
+  lastError      String?
+  autoSent       Boolean          @default(true)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([status, nextRetryAt])
+  @@index([organizationId])
+  @@index([jobId, candidateId])
+}
+
+model JobActivity {
+  id        String   @id @default(cuid())
+  jobId     String
+  job       Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  actorId   String?
+  action    String
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([jobId, createdAt])
+}
+
+enum CandidateSource {
+  MANUAL
+  UPLOAD
+  BULK_UPLOAD
+  GMAIL
+  IMPORT
+  REFERRAL
+}
+
+enum DraftStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model Candidate {
+  id                String          @id @default(cuid())
+  organizationId    String
+  organization      Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  externalId        String?
+  sourceVersion     String?
+  status            CandidateStatus @default(NEW)
+  firstName         String
+  lastName          String
+  headline          String?
+  email             String?
+  phone             String?
+  phoneCountryCode  String?
+  linkedIn          String?
+  githubUrl         String?
+  portfolioUrl      String?
+  website           String?
+  currentCompany    String?
+  currentRole       String?
+  currentTitle      String?
+  location          String?
+  country           String?
+  city              String?
+  skills            Json?
+  experienceYears   Float?
+  yearsExperience   Int?
+  workAuthorization String?
+  availability      String?
+  desiredSalary     Decimal?
+  noticePeriod      Int?
+  summary           String?
+  source            CandidateSource @default(MANUAL)
+  currentClientId   String?
+  currentClient     Client?         @relation(fields: [currentClientId], references: [id], onDelete: SetNull)
+  dedupeHash        String?
+  engagedAt         DateTime?
+  metadata          Json?
+  deletedAt         DateTime?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  applications      Application[]
+  matches           JobMatch[]
+  documents         Document[]
+  parsedResume      ParsedResume?
+  activities        CandidateActivity[]
+  drafts            CandidateDraft[]
+  candidateSkills   CandidateSkill[]
+  resumeImportBatches ResumeImportBatch[]
+
+  @@index([organizationId])
+  @@index([organizationId, email])
+  @@index([organizationId, engagedAt])
+  @@index([organizationId, status])
+  @@index([currentClientId])
+  @@index([externalId])
+  @@index([dedupeHash])
+  @@index([deletedAt])
+}
+
+model CandidateDraft {
+  id                String       @id @default(cuid())
+  organizationId    String
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  gmailMessageId    String?
+  gmailAttachmentId String?
+  fileName          String?
+  candidateId       String?
+  candidate         Candidate?   @relation(fields: [candidateId], references: [id], onDelete: SetNull)
+  status            DraftStatus  @default(PENDING)
+  firstName         String?
+  lastName          String?
+  email             String?
+  phone             String?
+  parsedData        Json?
+  suggestedJobs     Json?
+  storageKey        String?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  @@unique([organizationId, gmailMessageId, gmailAttachmentId])
+  @@index([organizationId, status])
+  @@index([organizationId, gmailMessageId])
+}
+
+model ParsedResume {
+  id             String   @id @default(cuid())
+  candidateId    String   @unique
+  candidate      Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  rawText        String?
+  skills         Json?
+  experience     Json?
+  education      Json?
+  certifications Json?
+  structured     Json?
+  parseMetadata  Json?
+  parserVersion  String?
+  summary        String?
+  projects       Json?
+  parsedAt       DateTime @default(now())
+}
+
+model CandidateActivity {
+  id          String    @id @default(cuid())
+  candidateId String
+  candidate   Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  action      String
+  metadata    Json?
+  createdAt   DateTime  @default(now())
+
+  @@index([candidateId, createdAt])
+}
+
+model Document {
+  id              String       @id @default(cuid())
+  organizationId  String?
+  jobId           String?
+  job             Job?         @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  candidateId     String?
+  candidate       Candidate?   @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  clientId        String?
+  client          Client?      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  type            DocumentType @default(OTHER)
+  storageProvider String?
+  storageKey      String
+  fileName        String
+  mimeType        String
+  sizeBytes       Int          @default(0)
+  checksum        String?
+  version         Int          @default(1)
+  isLatest        Boolean      @default(true)
+  uploadedBy      String?
+  metadata        Json?
+  parsedAt        DateTime?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @default(now()) @updatedAt
+
+  @@index([jobId])
+  @@index([candidateId])
+  @@index([organizationId])
+  @@index([clientId])
+  @@index([type])
+}
+
+enum PipelineStage {
+  NOT_APPLIED
+  APPLYING
+  INTERVIEW_COMPLETED
+  MCC
+  CERTIFIED
+  MATCHED_TO_PROJECT
+  PLACEMENT
+}
+
+model Application {
+  id                String             @id @default(cuid())
+  externalId        String?
+  sourceVersion     String?
+  jobId             String
+  job               Job                @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  candidateId       String
+  candidate         Candidate          @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  stage             PipelineStage      @default(NOT_APPLIED)
+  source            ApplicationSource?
+  coverLetter       String?
+  additionalNotes   String?
+  salaryExpectation Decimal?
+  noticePeriod      Int?
+  submittedAt       DateTime?
+  metadata          Json?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  stageHistory      StageHistory[]
+
+  @@unique([jobId, candidateId])
+  @@index([jobId, stage])
+  @@index([candidateId])
+}
+
+model StageHistory {
+  id            String        @id @default(cuid())
+  applicationId String
+  application   Application   @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  fromStage     PipelineStage?
+  toStage       PipelineStage
+  changedById   String?
+  changedBy     User?         @relation(fields: [changedById], references: [id], onDelete: SetNull)
+  note          String?
+  changedAt     DateTime      @default(now())
+
+  @@index([applicationId, changedAt])
+}
+
+model JobMatch {
+  id              String    @id @default(cuid())
+  jobId           String
+  job             Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  candidateId     String
+  candidate       Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  score           Float     @default(0)
+  skillsMatch     Float     @default(0)
+  experienceMatch Float     @default(0)
+  descriptionMatch Float    @default(0)
+  missingSkills   Json?
+  reason          String?
+  analysis        Json?
+  computedAt      DateTime  @default(now())
+
+  @@unique([jobId, candidateId])
+  @@index([jobId, score(sort: Desc)])
+  @@index([candidateId])
+}
+
+model Skill {
+  id                  String                    @id @default(cuid())
+  externalId          String?
+  sourceVersion       String?
+  name                String                    @unique
+  metadata            Json?
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
+  candidateSkills     CandidateSkill[]
+  jobSkills           JobSkill[]
+  categoryAssignments SkillCategoryAssignment[]
+}
+
+model SkillCategory {
+  id            String                    @id @default(cuid())
+  externalId    String?
+  sourceVersion String?
+  name          String                    @unique
+  metadata      Json?
+  createdAt     DateTime                  @default(now())
+  updatedAt     DateTime                  @updatedAt
+  assignments   SkillCategoryAssignment[]
+}
+
+model SkillCategoryAssignment {
+  skillId    String
+  categoryId String
+  metadata   Json?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  skill      Skill         @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  category   SkillCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([skillId, categoryId])
+  @@index([categoryId])
+}
+
+model CandidateSkill {
+  candidateId     String
+  skillId         String
+  yearsExperience Int?
+  proficiency     String?
+  verified        Boolean?
+  metadata        Json?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  candidate       Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  skill           Skill     @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@id([candidateId, skillId])
+  @@index([skillId])
+}
+
+model JobSkill {
+  jobId     String
+  skillId   String
+  required  Boolean?
+  priority  Int?
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  job       Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  skill     Skill    @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@id([jobId, skillId])
+  @@index([skillId])
+}
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  SENDING
+  SENT
+  FAILED
+}
+
+model EmailTemplate {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  jobId          String?
+  name           String
+  subject        String
+  body           String
+  isDefault      Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  campaigns      EmailCampaign[]
+
+  @@index([organizationId])
+}
+
+model ReferralTemplate {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  jobId          String?
+  name           String
+  subject        String
+  body           String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([organizationId])
+}
+
+model EmailCampaign {
+  id         String         @id @default(cuid())
+  jobId      String
+  job        Job            @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  templateId String
+  template   EmailTemplate  @relation(fields: [templateId], references: [id])
+  name       String
+  status     CampaignStatus @default(DRAFT)
+  sentAt     DateTime?
+  createdAt  DateTime       @default(now())
+
+  messages   EmailMessage[]
+
+  @@index([jobId])
+}
+
+model EmailMessage {
+  id             String        @id @default(cuid())
+  campaignId     String
+  campaign       EmailCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  candidateId    String?
+  jobId          String?
+  templateId     String?
+  recipientEmail String
+  recipientName  String?
+  subject        String
+  body           String
+  trackingId     String        @unique @default(cuid())
+  autoSent       Boolean       @default(false)
+  sentAt         DateTime?
+  deliveredAt    DateTime?
+  openedAt       DateTime?
+  clickedAt      DateTime?
+  repliedAt      DateTime?
+  createdAt      DateTime      @default(now())
+
+  @@index([campaignId])
+  @@index([candidateId])
+  @@index([jobId])
+  @@index([sentAt])
+}
+
+enum ChannelType {
+  DM
+  GROUP
+  JOB
+}
+
+model Channel {
+  id             String      @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  jobId          String?
+  job            Job?        @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  type           ChannelType
+  name           String?
+  createdAt      DateTime    @default(now())
+
+  members        ChannelMember[]
+  messages       Message[]
+
+  @@index([organizationId])
+  @@index([jobId])
+}
+
+model ChannelMember {
+  id         String   @id @default(cuid())
+  channelId  String
+  channel    Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lastReadAt DateTime?
+  joinedAt   DateTime @default(now())
+
+  @@unique([channelId, userId])
+}
+
+model Message {
+  id          String   @id @default(cuid())
+  channelId   String
+  channel     Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  senderId    String
+  sender      User     @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  content     String
+  mentions    Json?
+  attachments Json?
+  createdAt   DateTime @default(now())
+
+  @@index([channelId, createdAt])
+}
+
+model GmailConnection {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  email        String
+  accessToken  String
+  refreshToken String
+  historyId    String?
+  lastSyncAt   DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([userId])
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String
+  title     String
+  body      String?
+  payload   Json?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, readAt])
+}
+
+model AuditLog {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  actorId        String?
+  actor          User?        @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action         String
+  entityType     String
+  entityId       String?
+  metadata       Json?
+  createdAt      DateTime     @default(now())
+
+  @@index([organizationId, createdAt])
+}
+
+model OrgSettings {
+  id                    String       @id @default(cuid())
+  organizationId        String       @unique
+  organization          Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  matchingWeights       Json?
+  storageUsedBytes      Int          @default(0)
+  storageLimitBytes     Int          @default(2147483647)
+  featureFlags          Json?
+  websiteJobLastSyncAt  DateTime?
+  websiteJobLastSyncStats Json?
+  updatedAt             DateTime     @updatedAt
+}

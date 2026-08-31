@@ -1,0 +1,2 @@
+ALTER TABLE "OrgSettings"
+ADD COLUMN IF NOT EXISTS "websiteJobAutoSyncEnabled" BOOLEAN NOT NULL DEFAULT true;

@@ -1,0 +1,63 @@
+import { NextRequest, NextResponse } from "next/server";
+import { requirePermission } from "@/lib/auth/session";
+import { sendBulkTemplatedEmailsToCandidates } from "@/lib/services/email-service";
+import { apiErrorResponse } from "@/lib/api-error";
+
+export const maxDuration = 300;
+
+export async function POST(request: NextRequest) {
+  try {
+    const ctx = await requirePermission("send_email");
+    const body = await request.json();
+
+    const { jobId, candidateIds, templateId, customLink, subject, body: emailBody } = body;
+    if (!jobId || !Array.isArray(candidateIds) || candidateIds.length === 0) {
+      return NextResponse.json(
+        { error: "jobId and a non-empty candidateIds array are required" },
+        { status: 400 }
+      );
+    }
+
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        const send = (data: unknown) => {
+          controller.enqueue(encoder.encode(`${JSON.stringify(data)}\n`));
+        };
+
+        try {
+          const result = await sendBulkTemplatedEmailsToCandidates({
+            jobId,
+            candidateIds,
+            templateId,
+            customLink,
+            subject,
+            body: emailBody,
+            userId: ctx.userId,
+            organizationId: ctx.organizationId,
+            onProgress: async (event) => {
+              send({ type: "progress", ...event });
+            },
+          });
+          send({ type: "done", ...result });
+        } catch (error) {
+          send({
+            type: "error",
+            error: error instanceof Error ? error.message : "Failed to send emails",
+          });
+        } finally {
+          controller.close();
+        }
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "application/x-ndjson; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+      },
+    });
+  } catch (error) {
+    return apiErrorResponse(error);
+  }
+}

@@ -1,0 +1,5 @@
+ALTER TABLE "ParsedResume" ADD COLUMN IF NOT EXISTS "structured" JSONB;
+ALTER TABLE "ParsedResume" ADD COLUMN IF NOT EXISTS "parseMetadata" JSONB;
+ALTER TABLE "ParsedResume" ADD COLUMN IF NOT EXISTS "parserVersion" TEXT;
+ALTER TABLE "ParsedResume" ADD COLUMN IF NOT EXISTS "summary" TEXT;
+ALTER TABLE "ParsedResume" ADD COLUMN IF NOT EXISTS "projects" JSONB;
