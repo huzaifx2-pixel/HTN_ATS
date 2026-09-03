@@ -8,7 +8,7 @@
     "dev:lan": "cross-env HOSTNAME=0.0.0.0 NODE_ENV=development next dev -H 0.0.0.0",
     "prebuild": "tsx scripts/prebuild-unlock.ts",
     "build": "next build --webpack",
-    "build:netlify": "prisma generate && next build --webpack",
+    "build:netlify": "prisma generate && next build",
     "postbuild": "tsx scripts/prepare-standalone.ts",
     "start": "tsx scripts/start-standalone.ts",
     "start:lan": "cross-env HOSTNAME=0.0.0.0 tsx scripts/start-standalone.ts",
