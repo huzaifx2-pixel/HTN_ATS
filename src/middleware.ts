@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSessionCookie } from "better-auth/cookies";
 
 /**
- * Keep this as `middleware.ts` (Edge), not Next.js 16 `proxy.ts` (Node).
- * Netlify runs the request gate as an Edge Function; Node proxy + webpack crashes it.
+ * Edge-only auth gate. Avoid importing better-auth here — Netlify bundles
+ * middleware for Edge and Node-only deps break the build.
  */
 const PUBLIC_PATHS = [
   "/login",
@@ -19,6 +18,14 @@ const PUBLIC_PATHS = [
   "/unsubscribe",
 ];
 
+function hasSessionCookie(request: NextRequest): boolean {
+  return Boolean(
+    request.cookies.get("better-auth.session_token")?.value ||
+      request.cookies.get("__Secure-better-auth.session_token")?.value ||
+      request.cookies.get("__Host-better-auth.session_token")?.value,
+  );
+}
+
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
@@ -26,8 +33,7 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const sessionCookie = getSessionCookie(request);
-  if (!sessionCookie) {
+  if (!hasSessionCookie(request)) {
     if (pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
