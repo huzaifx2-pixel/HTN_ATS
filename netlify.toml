@@ -1,5 +1,4 @@
 # Public site stays on Netlify; the full Next.js app runs on Railway.
-# Netlify only reverse-proxies to RAILWAY (set host below after first Railway deploy).
 [build]
   command = "node -e \"require('fs').mkdirSync('proxy-site',{recursive:true})\""
   publish = "proxy-site"
@@ -9,10 +8,8 @@
   NETLIFY_NEXT_PLUGIN_SKIP = "true"
   NEXT_TELEMETRY_DISABLED = "1"
 
-# Replace RAILWAY_PUBLIC_HOST after `railway domain` / first deploy.
-# force=true ensures this wins over any leftover Next framework routes.
 [[redirects]]
   from = "/*"
-  to = "https://PLACEHOLDER.up.railway.app/:splat"
+  to = "https://web-production-3e5aa.up.railway.app/:splat"
   status = 200
   force = true
