@@ -45,14 +45,27 @@ if (isWeakAuthSecret(currentSecret)) {
 }
 
 setOrReplace("HEADSBASE_DATA_DIR", "./data");
-setOrReplace("STORAGE_PROVIDER", "local");
 setOrReplace("STORAGE_LOCAL_PATH", "./data/uploads");
 setOrReplace("NODE_ENV", "production");
+
+// Cloud hybrid: operational DB in Postgres/Supabase, files in R2 when configured.
+const r2Ready = Boolean(
+  getEnvValue("R2_ACCOUNT_ID") &&
+    getEnvValue("R2_ACCESS_KEY_ID") &&
+    getEnvValue("R2_SECRET_ACCESS_KEY") &&
+    (getEnvValue("R2_BUCKET_NAME") || getEnvValue("R2_BUCKET")),
+);
+setOrReplace("STORAGE_PROVIDER", r2Ready ? "r2" : "local");
 
 writeFileSync(envPath, env, "utf8");
 
 console.log("\nProduction data paths configured:");
 console.log(`  HEADSBASE_DATA_DIR=./data`);
+console.log(`  STORAGE_PROVIDER=${r2Ready ? "r2" : "local"}`);
 console.log(`  STORAGE_LOCAL_PATH=./data/uploads`);
 console.log(`  Backups directory: ./data/backups`);
-console.log("\nYour database is on the local PostgreSQL server — back it up with npm run backup.");
+if (r2Ready) {
+  console.log("\nHybrid mode: database stays in Postgres/Supabase; new uploads go to R2.");
+} else {
+  console.log("\nR2 not fully configured — files stay on local disk. Set R2_* then re-run.");
+}
