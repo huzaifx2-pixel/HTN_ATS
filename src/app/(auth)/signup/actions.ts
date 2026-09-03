@@ -6,6 +6,10 @@ import { auth } from "@/lib/auth";
 import { sessionRequestHeaders } from "@/lib/auth/request-headers";
 import { scheduleOrgJobsSynced } from "@/lib/server/ensure-org-jobs-synced";
 import { ensureUserInCanonicalOrg } from "@/lib/org/ensure-canonical-org";
+import {
+  isAllowedSignupEmail,
+  signupDomainErrorMessage,
+} from "@/lib/org/signup-domain";
 
 export async function signupAction(_prev: string | undefined, formData: FormData): Promise<string | undefined> {
   const name = String(formData.get("name") ?? "").trim();
@@ -14,6 +18,10 @@ export async function signupAction(_prev: string | undefined, formData: FormData
 
   if (!name || !email || !password) {
     return "All fields are required.";
+  }
+
+  if (!isAllowedSignupEmail(email)) {
+    return signupDomainErrorMessage();
   }
 
   if (password.length < 8) {
@@ -26,6 +34,7 @@ export async function signupAction(_prev: string | undefined, formData: FormData
       headers: await sessionRequestHeaders(),
     });
 
+    // Public signup is always recruiter — never owner/admin via self-serve.
     const org = await ensureUserInCanonicalOrg(signup.user.id, "RECRUITER");
 
     try {

@@ -5,6 +5,10 @@ import { auth } from "@/lib/auth";
 import { setCredentialPassword, validateNewPassword } from "@/lib/auth/password";
 import { requireOrgContext } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
+import {
+  isAllowedSignupEmail,
+  signupDomainErrorMessage,
+} from "@/lib/org/signup-domain";
 import { isSuperAdminEmail } from "@/lib/org/super-admin";
 
 const ASSIGNABLE_ROLES: MemberRole[] = ["ADMIN", "RECRUITER", "VIEWER"];
@@ -43,6 +47,10 @@ export async function addOrganizationMember(input: {
 
   if (!email || !name) {
     throw new Error("Name and email are required.");
+  }
+
+  if (!isAllowedSignupEmail(email)) {
+    throw new Error(signupDomainErrorMessage());
   }
 
   if (role === "OWNER") {

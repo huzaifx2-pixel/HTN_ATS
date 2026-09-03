@@ -4,6 +4,7 @@ import { useActionState } from "react";
 import Link from "next/link";
 import { signupAction } from "@/app/(auth)/signup/actions";
 import { CANONICAL_ORG_NAME } from "@/lib/org/single-org";
+import { COMPANY_EMAIL_DOMAIN } from "@/lib/org/signup-domain";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
@@ -29,9 +30,9 @@ export default function SignupPage() {
         </div>
         <Card>
           <CardHeader>
-            <CardTitle>Create account</CardTitle>
+            <CardTitle>Create recruiter account</CardTitle>
             <CardDescription>
-              Join {CANONICAL_ORG_NAME} on the shared recruiting workspace
+              Join {CANONICAL_ORG_NAME} with your @{COMPANY_EMAIL_DOMAIN} email
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -41,8 +42,16 @@ export default function SignupPage() {
                 <Input id="name" name="name" autoComplete="name" required className="mt-1" />
               </div>
               <div>
-                <Label htmlFor="email">Email</Label>
-                <Input id="email" name="email" type="email" autoComplete="email" required className="mt-1" />
+                <Label htmlFor="email">Work email</Label>
+                <Input
+                  id="email"
+                  name="email"
+                  type="email"
+                  autoComplete="email"
+                  required
+                  className="mt-1"
+                  placeholder={`you@${COMPANY_EMAIL_DOMAIN}`}
+                />
               </div>
               <div>
                 <Label htmlFor="password">Password</Label>
@@ -55,11 +64,12 @@ export default function SignupPage() {
                 />
               </div>
               <p className="text-xs text-muted-foreground rounded-lg border bg-muted/40 px-3 py-2">
-                New accounts are added to <strong>{CANONICAL_ORG_NAME}</strong>. All recruiters share the same jobs and candidates.
+                Only <strong>@{COMPANY_EMAIL_DOMAIN}</strong> addresses can sign up.
+                New accounts join as <strong>recruiter</strong> on the shared workspace.
               </p>
               {error && <p className="text-sm text-destructive">{error}</p>}
               <Button type="submit" className="w-full" disabled={pending}>
-                {pending ? "Creating account..." : "Create account"}
+                {pending ? "Creating account..." : "Create recruiter account"}
               </Button>
             </form>
             <p className="mt-4 text-center text-sm text-muted-foreground">

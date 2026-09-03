@@ -1,10 +1,8 @@
-const DEFAULT_SUPER_ADMIN_EMAIL = "huzaif@headsbaseconsulting.com";
+import { normalizeEmail } from "@/lib/org/signup-domain";
 
-function normalizeEmail(email: string) {
-  return email.trim().toLowerCase();
-}
+const DEFAULT_SUPER_ADMIN_EMAIL = "jobs@headsbaseconsulting.com";
 
-/** Email allowed to add/remove users and change roles (defaults to Huzaif). */
+/** Email allowed to add/remove users and change roles (defaults to jobs@). */
 export function getSuperAdminEmail() {
   return normalizeEmail(process.env.HEADSBASE_SUPER_ADMIN_EMAIL ?? DEFAULT_SUPER_ADMIN_EMAIL);
 }

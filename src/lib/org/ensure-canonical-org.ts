@@ -2,7 +2,7 @@ import { prisma } from "@/lib/db";
 import { CANONICAL_ORG_NAME, CANONICAL_ORG_SLUG } from "@/lib/org/single-org";
 import type { MemberRole } from "@prisma/client";
 
-export async function getOrCreateCanonicalOrganization(creatorUserId?: string) {
+export async function getOrCreateCanonicalOrganization() {
   const existing = await prisma.organization.findUnique({
     where: { slug: CANONICAL_ORG_SLUG },
   });
@@ -13,14 +13,6 @@ export async function getOrCreateCanonicalOrganization(creatorUserId?: string) {
     data: {
       name: CANONICAL_ORG_NAME,
       slug: CANONICAL_ORG_SLUG,
-      members: creatorUserId
-        ? {
-            create: {
-              userId: creatorUserId,
-              role: "OWNER",
-            },
-          }
-        : undefined,
       orgSettings: {
         create: {
           matchingWeights: { skills: 40, experience: 25, title: 20, location: 15 },
@@ -31,7 +23,7 @@ export async function getOrCreateCanonicalOrganization(creatorUserId?: string) {
 }
 
 export async function ensureUserInCanonicalOrg(userId: string, role: MemberRole = "RECRUITER") {
-  const org = await getOrCreateCanonicalOrganization(userId);
+  const org = await getOrCreateCanonicalOrganization();
 
   await prisma.member.upsert({
     where: {
@@ -45,6 +37,7 @@ export async function ensureUserInCanonicalOrg(userId: string, role: MemberRole 
       userId,
       role,
     },
+    // Keep an existing OWNER/ADMIN role if already assigned.
     update: {},
   });
 
