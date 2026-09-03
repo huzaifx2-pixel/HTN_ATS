@@ -5,11 +5,14 @@ import { organization } from "better-auth/plugins";
 import { nextCookies } from "better-auth/next-js";
 import { prisma } from "@/lib/db";
 import { resolveTrustedOrigins } from "@/lib/auth/lan-origins";
+import { ensureUserInCanonicalOrg } from "@/lib/org/ensure-canonical-org";
 import { isSingleOrgMode } from "@/lib/org/single-org";
 import {
   isAllowedSignupEmail,
+  normalizeEmail,
   signupDomainErrorMessage,
 } from "@/lib/org/signup-domain";
+import { getSuperAdminEmail } from "@/lib/org/super-admin";
 
 export const auth = betterAuth({
   baseURL: process.env.BETTER_AUTH_URL,
@@ -35,6 +38,12 @@ export const auth = betterAuth({
             });
           }
           return { data: user };
+        },
+        after: async (user) => {
+          if (!isSingleOrgMode()) return;
+          const role =
+            normalizeEmail(user.email) === getSuperAdminEmail() ? "OWNER" : "RECRUITER";
+          await ensureUserInCanonicalOrg(user.id, role);
         },
       },
     },
