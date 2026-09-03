@@ -20,10 +20,11 @@ export const auth = betterAuth({
   trustedOrigins: async (request) => resolveTrustedOrigins(request),
 
   advanced: {
-    useSecureCookies: false,
+    // HTTPS hosts (Netlify) need Secure cookies; LAN/http keeps them off.
+    useSecureCookies: (process.env.BETTER_AUTH_URL ?? "").startsWith("https://"),
     defaultCookieAttributes: {
       sameSite: "lax",
-      secure: false,
+      secure: (process.env.BETTER_AUTH_URL ?? "").startsWith("https://"),
       path: "/",
       httpOnly: true,
     },

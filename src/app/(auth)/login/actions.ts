@@ -46,7 +46,12 @@ export async function loginAction(_prev: string | undefined, formData: FormData)
     if (error instanceof APIError) {
       return error.message ?? "Login failed";
     }
-    return "Login failed";
+    console.error("[login] unexpected error:", error);
+    const message = error instanceof Error ? error.message : "Login failed";
+    if (/DATABASE_URL|datasource|Prisma|ECONNREFUSED|timeout|empty/i.test(message)) {
+      return "Database is unavailable. Check DATABASE_URL / Supabase project status.";
+    }
+    return message || "Login failed";
   }
 
   redirect(safeNextPath(String(formData.get("next") ?? "")));
