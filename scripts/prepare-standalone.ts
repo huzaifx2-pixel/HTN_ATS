@@ -100,6 +100,11 @@ export type PrepareStandaloneOptions = {
 };
 
 export function prepareStandaloneAssets(options: PrepareStandaloneOptions = {}) {
+  if (process.env.NETLIFY) {
+    console.log("Skipping standalone asset copy on Netlify.");
+    return;
+  }
+
   const phase =
     options.phase ??
     (process.argv[1]?.replace(/\\/g, "/").endsWith("scripts/prepare-standalone.ts")

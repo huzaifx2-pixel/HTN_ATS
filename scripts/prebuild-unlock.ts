@@ -27,6 +27,11 @@ function runPowerShell(script: string) {
   );
 }
 
+if (process.env.NETLIFY) {
+  console.log("Skipping Windows Prisma unlock on Netlify.");
+  process.exit(0);
+}
+
 console.log("Preparing build (stopping servers that lock Prisma binaries)...");
 
 runPowerShell(`

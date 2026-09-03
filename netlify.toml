@@ -1,0 +1,9 @@
+# Headsbase ATS is a full Next.js app (UI + server actions + API routes).
+# Netlify cannot host "just the frontend" as a static export.
+[build]
+  command = "npm run build:netlify"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "22"
+  NEXT_TELEMETRY_DISABLED = "1"

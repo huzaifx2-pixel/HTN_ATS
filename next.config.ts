@@ -51,9 +51,12 @@ const lanHosts = [
 ];
 const actionOrigins = lanHosts.map((host) => `${host}:3000`);
 
+const isNetlify = Boolean(process.env.NETLIFY);
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: "standalone",
+  // Railway/desktop use standalone. Netlify's Next runtime cannot use that output mode.
+  ...(isNetlify ? {} : { output: "standalone" as const }),
   // Keep file tracing inside the project (avoids Windows absolute-path copy bugs).
   outputFileTracingRoot: projectRoot,
   outputFileTracingExcludes: {
