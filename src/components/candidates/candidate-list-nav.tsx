@@ -29,18 +29,20 @@ export function CandidateListNav({
   useEffect(() => {
     if (!nav || variant !== "toolbar") return;
 
+    const currentNav = nav;
+
     function onKey(event: KeyboardEvent) {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       const target = event.target as HTMLElement | null;
       const tag = target?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable) return;
-      if (event.key === "ArrowLeft" && nav.prevId) {
+      if (event.key === "ArrowLeft" && currentNav.prevId) {
         event.preventDefault();
-        router.push(`/candidates/${nav.prevId}${tabQuery}`);
+        router.push(`/candidates/${currentNav.prevId}${tabQuery}`);
       }
-      if (event.key === "ArrowRight" && nav.nextId) {
+      if (event.key === "ArrowRight" && currentNav.nextId) {
         event.preventDefault();
-        router.push(`/candidates/${nav.nextId}${tabQuery}`);
+        router.push(`/candidates/${currentNav.nextId}${tabQuery}`);
       }
     }
 
