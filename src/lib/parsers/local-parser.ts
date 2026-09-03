@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import mammoth from "mammoth";
-import { PDFParse } from "pdf-parse";
 import { getPdfWorkerPath } from "@/lib/runtime/paths";
 import type { ResumeParserAdapter, ParsedResumeResult } from "./types";
 import { sanitizePostgresText } from "@/lib/sanitize-postgres";
@@ -16,10 +15,13 @@ import type { ExtractionMethod } from "./pipeline/parsed-field";
 
 let pdfWorkerConfigured = false;
 
-function ensurePdfWorker() {
-  if (pdfWorkerConfigured) return;
-  PDFParse.setWorker(pathToFileURL(getPdfWorkerPath()).href);
-  pdfWorkerConfigured = true;
+async function loadPdfParse() {
+  const { PDFParse } = await import("pdf-parse");
+  if (!pdfWorkerConfigured) {
+    PDFParse.setWorker(pathToFileURL(getPdfWorkerPath()).href);
+    pdfWorkerConfigured = true;
+  }
+  return PDFParse;
 }
 
 function fingerprintBuffer(buffer: Buffer): string {
@@ -31,7 +33,7 @@ async function extractPdfLayout(buffer: Buffer): Promise<{
   extractionMethod: ExtractionMethod;
   pageCount: number;
 }> {
-  ensurePdfWorker();
+  const PDFParse = await loadPdfParse();
   const parser = new PDFParse({ data: new Uint8Array(buffer) });
   try {
     const result = await parser.getText({

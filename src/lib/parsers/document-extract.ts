@@ -1,17 +1,20 @@
 /**
  * Extended document text extraction: legacy .doc, RTF, and optional OCR for scanned PDFs.
+ * pdf-parse is imported lazily — eager import crashes Netlify serverless (DOMMatrix / canvas).
  */
 
-import { PDFParse } from "pdf-parse";
 import { pathToFileURL } from "node:url";
 import { getPdfWorkerPath } from "@/lib/runtime/paths";
 
 let pdfWorkerConfigured = false;
 
-function ensurePdfWorker() {
-  if (pdfWorkerConfigured) return;
-  PDFParse.setWorker(pathToFileURL(getPdfWorkerPath()).href);
-  pdfWorkerConfigured = true;
+async function loadPdfParse() {
+  const { PDFParse } = await import("pdf-parse");
+  if (!pdfWorkerConfigured) {
+    PDFParse.setWorker(pathToFileURL(getPdfWorkerPath()).href);
+    pdfWorkerConfigured = true;
+  }
+  return PDFParse;
 }
 
 export async function extractLegacyDocText(buffer: Buffer): Promise<string> {
@@ -51,8 +54,6 @@ export async function ocrPdfText(buffer: Buffer, maxPages = 2): Promise<string> 
     return "";
   }
 
-  ensurePdfWorker();
-
   const OCR_TIMEOUT_MS = 45_000;
 
   function ocrWithTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
@@ -75,6 +76,7 @@ export async function ocrPdfText(buffer: Buffer, maxPages = 2): Promise<string> 
   }
 
   try {
+    const PDFParse = await loadPdfParse();
     const parser = new PDFParse({ data: new Uint8Array(buffer) });
     const { createWorker } = await import("tesseract.js");
     const worker = await createWorker("eng");
