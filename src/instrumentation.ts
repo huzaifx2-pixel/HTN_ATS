@@ -1,6 +1,14 @@
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
 
+  try {
+    await registerNodeRuntime();
+  } catch (error) {
+    console.error("[instrumentation] startup failed; continuing without background workers", error);
+  }
+}
+
+async function registerNodeRuntime() {
   const { applyMaxListeners } = await import("@/lib/runtime/apply-max-listeners");
   applyMaxListeners();
 

@@ -2,6 +2,9 @@
 export function shouldStartBackgroundWorkers(): boolean {
   if (process.env.NEXT_RUNTIME !== "nodejs") return false;
 
+  // Netlify/Lambda cannot run long-lived schedulers or native PDF parsers at boot.
+  if (process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME) return false;
+
   const phase = process.env.NEXT_PHASE;
   if (
     phase === "phase-production-build" ||
