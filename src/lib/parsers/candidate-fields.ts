@@ -118,7 +118,7 @@ export function candidateIdentityFields(
   existing: { firstName: string; lastName: string },
   overrides: Set<string> = new Set(),
   fileName?: string,
-) {
+): { firstName?: string; lastName?: string } {
   if (overrides.has("firstName") || overrides.has("lastName")) {
     return { firstName: existing.firstName, lastName: existing.lastName };
   }
