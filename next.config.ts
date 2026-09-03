@@ -59,14 +59,22 @@ const nextConfig = {
   ...(isNetlify ? {} : { output: "standalone" as const }),
   // Keep file tracing inside the project (avoids Windows absolute-path copy bugs).
   outputFileTracingRoot: projectRoot,
-  outputFileTracingExcludes: {
-    "*": [
-      "**/.git/**",
-      "**/node_modules/@swc/**",
-      "**/node_modules/webpack/**",
-      "**/node_modules/terser/**",
-    ],
-  },
+  ...(isNetlify
+    ? {
+        outputFileTracingIncludes: {
+          "*": ["node_modules/@swc/helpers/**"],
+        },
+      }
+    : {
+        outputFileTracingExcludes: {
+          "*": [
+            "**/.git/**",
+            "**/node_modules/@swc/**",
+            "**/node_modules/webpack/**",
+            "**/node_modules/terser/**",
+          ],
+        },
+      }),
   allowedDevOrigins: lanHosts,
   serverExternalPackages: ["pdf-parse", "pdfjs-dist", "@prisma/client", "prisma"],
   turbopack: {
