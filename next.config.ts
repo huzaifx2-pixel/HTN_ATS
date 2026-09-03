@@ -49,7 +49,34 @@ const lanHosts = [
     "127.0.0.1",
   ]),
 ];
-const actionOrigins = lanHosts.map((host) => `${host}:3000`);
+
+/** Server Actions allowedOrigins: include public HTTPS hosts without forcing :3000. */
+function resolveActionOrigins(hosts: string[]): string[] {
+  const origins = new Set<string>();
+  for (const host of hosts) {
+    if (!host) continue;
+    if (host.includes(":")) {
+      origins.add(host);
+      continue;
+    }
+    origins.add(`${host}:3000`);
+    origins.add(host);
+  }
+  for (const key of ["NEXT_PUBLIC_APP_URL", "BETTER_AUTH_URL", "HEADSBASE_APP_URL"] as const) {
+    const value = process.env[key]?.trim();
+    if (!value) continue;
+    try {
+      const parsed = new URL(value);
+      origins.add(parsed.host);
+      origins.add(parsed.hostname);
+    } catch {
+      /* ignore */
+    }
+  }
+  return [...origins];
+}
+
+const actionOrigins = resolveActionOrigins(lanHosts);
 
 const isNetlify = Boolean(process.env.NETLIFY);
 

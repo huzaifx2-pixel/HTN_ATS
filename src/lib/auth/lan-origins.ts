@@ -54,8 +54,23 @@ export function resolveTrustedOrigins(request?: Request): string[] {
   ];
 
   for (const candidate of candidates) {
-    if (candidate && isAllowedLanOrigin(candidate)) {
+    if (!candidate) continue;
+    if (isAllowedLanOrigin(candidate)) {
       origins.add(candidate);
+      continue;
+    }
+    // Allow the configured public app origin (Netlify / Railway) even when
+    // the proxied Host header differs from BETTER_AUTH_URL.
+    try {
+      const host = new URL(candidate).hostname;
+      for (const known of origins) {
+        if (new URL(known).hostname === host) {
+          origins.add(candidate);
+          break;
+        }
+      }
+    } catch {
+      /* ignore */
     }
   }
 
