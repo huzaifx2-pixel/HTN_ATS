@@ -8,7 +8,7 @@ export async function POST(request: NextRequest) {
     const session = await requireSession();
     const body = await request.json();
 
-    const { jobId, candidateId, templateId, customLink, subject, body: emailBody } = body;
+    const { jobId, candidateId, templateId, customLink, subject, body: emailBody, skipDuplicateCheck } = body;
     if (!jobId || !candidateId) {
       return NextResponse.json({ error: "jobId and candidateId are required" }, { status: 400 });
     }
@@ -21,6 +21,7 @@ export async function POST(request: NextRequest) {
       subject,
       body: emailBody,
       userId: session.user.id,
+      skipDuplicateCheck: Boolean(skipDuplicateCheck),
     });
 
     return NextResponse.json(result);

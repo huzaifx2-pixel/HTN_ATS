@@ -210,13 +210,13 @@ export async function ExecutiveDashboard({ organizationId }: { organizationId: s
           <Card>
             <CardHeader>
               <CardTitle className="text-sm">
-                <Link href="/candidates" className="hover:text-brand-700 hover:underline">
+                <Link href="/matching" className="hover:text-brand-700 hover:underline">
                   Tasks Due
                 </Link>
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <Link href="/candidates" className="flex items-start gap-2 rounded-md px-1 -mx-1 py-1 text-sm hover:bg-muted/60">
+              <Link href="/matching?tab=follow-up" className="flex items-start gap-2 rounded-md px-1 -mx-1 py-1 text-sm hover:bg-muted/60">
                 <input type="checkbox" className="mt-1 pointer-events-none" tabIndex={-1} readOnly />
                 <div>
                   <div>Follow up with candidates</div>

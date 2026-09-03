@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getActiveOrganization, requireSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
-import type { RecruiterMatchAnalysis } from "@/lib/matching/recruiter-engine/types";
+import { computeMatch } from "@/lib/matching/engine";
 
 export async function GET(
   _request: Request,
@@ -21,11 +21,22 @@ export async function GET(
         candidateId,
         job: { organizationId: member.organizationId },
       },
-      select: {
-        score: true,
-        analysis: true,
-        reason: true,
-        computedAt: true,
+      include: {
+        job: true,
+        candidate: {
+          include: {
+            parsedResume: {
+              select: {
+                rawText: true,
+                skills: true,
+                experience: true,
+                education: true,
+                certifications: true,
+                structured: true,
+              },
+            },
+          },
+        },
       },
     });
 
@@ -33,11 +44,17 @@ export async function GET(
       return NextResponse.json({ error: "Match not found" }, { status: 404 });
     }
 
+    const result = computeMatch(match.job, match.candidate, undefined, {
+      resumeText: match.candidate.parsedResume?.rawText ?? undefined,
+      parsedResume: match.candidate.parsedResume ?? undefined,
+    });
+
     return NextResponse.json({
-      score: match.score,
-      reason: match.reason,
+      score: result.score,
+      storedScore: match.score,
+      reason: result.reason,
       computedAt: match.computedAt,
-      analysis: match.analysis as RecruiterMatchAnalysis | null,
+      analysis: result.analysis,
     });
   } catch (error) {
     return NextResponse.json(

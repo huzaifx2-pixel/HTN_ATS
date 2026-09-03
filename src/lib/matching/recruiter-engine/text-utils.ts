@@ -39,9 +39,9 @@ export function termsEquivalent(a: string, b: string, groups: string[][] = SKILL
   if (!left || !right) return false;
   if (left === right || left.includes(right) || right.includes(left)) return true;
 
-  const group = findSynonymGroup(left, groups) ?? findSynonymGroup(right, groups);
-  if (!group) return false;
-  return group.some((item) => left.includes(normalizeText(item)) || right.includes(normalizeText(item)));
+  const leftGroup = findSynonymGroup(left, groups);
+  const rightGroup = findSynonymGroup(right, groups);
+  return Boolean(leftGroup && rightGroup && leftGroup === rightGroup);
 }
 
 export function findEvidenceSnippet(resumeText: string, term: string, radius = 80) {
@@ -167,7 +167,7 @@ export function keywordCoverage(required: string[], resumeText: string, candidat
     else matched.push(keyword);
   }
 
-  const coverage = required.length === 0 ? 100 : Math.round((matched.length / required.length) * 100);
+  const coverage = required.length === 0 ? 0 : Math.round((matched.length / required.length) * 100);
   return { matched, missing, coverage };
 }
 
@@ -198,18 +198,28 @@ export function roundScore(value: number) {
 
 export function scoreToCategory(score: number) {
   if (score >= 90) return "Excellent Match" as const;
-  if (score >= 75) return "Strong Match" as const;
-  if (score >= 60) return "Moderate Match" as const;
+  if (score >= 80) return "Strong Match" as const;
+  if (score >= 70) return "Good Match" as const;
+  if (score >= 60) return "Potential Match" as const;
+  if (score >= 50) return "Adjacent Match" as const;
   if (score >= 40) return "Weak Match" as const;
   return "Poor Match" as const;
 }
 
 export function scoreToRecommendation(score: number) {
   if (score >= 90) return "Highly Recommended" as const;
-  if (score >= 75) return "Recommended" as const;
+  if (score >= 70) return "Recommended" as const;
   if (score >= 60) return "Consider" as const;
   if (score >= 40) return "Not Recommended" as const;
   return "Reject" as const;
+}
+
+export function scoreToQualificationStatus(score: number, notQualified = false) {
+  if (notQualified || score <= 0) return "NOT_QUALIFIED" as const;
+  if (score >= 90) return "EXCELLENT" as const;
+  if (score >= 70) return "STRONG" as const;
+  if (score >= 60) return "POTENTIAL" as const;
+  return "NOT_QUALIFIED" as const;
 }
 
 export function parseCommaList(value?: string | null) {

@@ -10,9 +10,13 @@ export type SkillMatchStatus =
 export type MatchCategory =
   | "Excellent Match"
   | "Strong Match"
+  | "Good Match"
+  | "Potential Match"
   | "Moderate Match"
+  | "Adjacent Match"
   | "Weak Match"
-  | "Poor Match";
+  | "Poor Match"
+  | "Not Qualified";
 
 export type HiringRecommendation =
   | "Highly Recommended"
@@ -20,6 +24,14 @@ export type HiringRecommendation =
   | "Consider"
   | "Not Recommended"
   | "Reject";
+
+export type QualificationStatus = "EXCELLENT" | "STRONG" | "POTENTIAL" | "NOT_QUALIFIED";
+
+export type RequirementTier = "critical" | "core" | "preferred";
+
+export type EvidenceKind = "EXACT" | "EQUIVALENT" | "RELATED" | "MISSING";
+
+export type EvidenceLevel = 0 | 1 | 2 | 3;
 
 export type MissingRequirementSeverity = "Critical" | "Important" | "Preferred";
 
@@ -41,6 +53,9 @@ export interface SkillEvaluation {
   evidence: string;
   reasoning: string;
   status: SkillMatchStatus;
+  tier?: RequirementTier;
+  evidenceLevel?: EvidenceLevel;
+  evidenceKind?: EvidenceKind;
 }
 
 export interface DetailedReasoningEntry {
@@ -65,12 +80,26 @@ export interface TransferableSkillEntry {
   reasoning: string;
 }
 
+export interface RequirementBreakdown {
+  critical: SectionScoreDetail;
+  coreSkills: SectionScoreDetail;
+  preferredSkills: SectionScoreDetail;
+  responsibilities: SectionScoreDetail;
+  experience: SectionScoreDetail;
+  jobTitle: SectionScoreDetail;
+  industry: SectionScoreDetail;
+  location: SectionScoreDetail;
+  booleanSearch: SectionScoreDetail;
+}
+
 export interface RecruiterMatchAnalysis {
   overallScore: number;
   matchCategory: MatchCategory;
   recommendation: HiringRecommendation;
   confidence: MatchConfidence;
   summary: string;
+  engineVersion?: "v2";
+  qualificationStatus?: QualificationStatus;
 
   sectionScores: {
     jobTitle: SectionScoreDetail;
@@ -84,7 +113,10 @@ export interface RecruiterMatchAnalysis {
     tools: SectionScoreDetail;
     softSkills: SectionScoreDetail;
     location: SectionScoreDetail;
+    criticalRequirements: SectionScoreDetail;
   };
+
+  requirementBreakdown?: RequirementBreakdown;
 
   strengths: string[];
   risks: string[];
@@ -107,4 +139,14 @@ export interface RecruiterMatchAnalysis {
     matchedTerms: string[];
     reason?: string;
   };
+  overlappingKeywords?: string[];
+  retrievalSignals?: {
+    boolean: boolean;
+    title: boolean;
+    skills: boolean;
+    semantic: boolean;
+    location: boolean;
+  };
+  retrievalScore?: number;
+  semanticSimilarity?: number;
 }

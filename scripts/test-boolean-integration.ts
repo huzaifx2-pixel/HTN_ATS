@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import type { Candidate, Job } from "@prisma/client";
 import { computeMatch } from "@/lib/matching/engine";
+import { isPersistableMatch } from "@/lib/matching/persist";
 
 const baseCandidate = {
   id: "c1",
@@ -63,19 +64,25 @@ test("with boolean pass: candidate gets full recruiter score", () => {
   assert.ok(result.analysis.booleanSearch?.matchedTerms.includes("Python"));
 });
 
-test("with boolean fail: score is 0 and not persisted-worthy", () => {
+test("with boolean fail: score is 0 and not persistable", () => {
   const job = { ...baseJob, booleanSearch: "Java NOT junior" };
   const result = computeMatch(job, baseCandidate, undefined, { resumeText });
   assert.equal(result.score, 0);
   assert.equal(result.analysis.booleanSearch?.passes, false);
-  assert.match(result.reason, /boolean/i);
+  assert.equal(isPersistableMatch(result.score, result.analysis), false);
 });
 
-test("with boolean NOT filter: excludes junior in corpus", () => {
+test("with boolean NOT filter: failing the Boolean zeros the match", () => {
   const job = { ...baseJob, booleanSearch: "Python NOT junior" };
-  const juniorResume = "Junior Python developer intern";
+  const juniorResume = "Junior Python developer intern with React experience";
   const result = computeMatch(job, baseCandidate, undefined, { resumeText: juniorResume });
+  assert.equal(result.analysis.booleanSearch?.passes, false);
   assert.equal(result.score, 0);
 });
 
-console.log("\nBoolean integration tests passed.");
+test("boolean pass is persistable at the match threshold", () => {
+  const job = { ...baseJob, booleanSearch: "Python AND React" };
+  const result = computeMatch(job, baseCandidate, undefined, { resumeText });
+  assert.equal(result.analysis.booleanSearch?.passes, true);
+  assert.equal(isPersistableMatch(60, result.analysis), true);
+});

@@ -3,7 +3,7 @@
  * Usage: npx tsx scripts/test-boolean-generator.ts
  */
 import assert from "node:assert/strict";
-import { generateBooleanSearch } from "@/lib/matching/boolean-search/generate";
+import { generateBooleanSearch, resolveBooleanSearchForSave } from "@/lib/matching/boolean-search/generate";
 import { matchJobFamily } from "@/lib/matching/boolean-search/job-family-templates";
 import { extractRecruiterEntities } from "@/lib/matching/boolean-search/entity-extractor";
 import { stripStopPhrases } from "@/lib/matching/boolean-search/boolean-entities";
@@ -227,6 +227,29 @@ test("output uses titles AND skills blocks", () => {
   });
   assert.match(result, /^\([\s\S]+\)\n\nAND\n\n\([\s\S]+\)$/);
   assert.doesNotMatch(result, /\bNOT\b/);
+});
+
+test("save keeps a submitted Boolean instead of regenerating", () => {
+  const submitted = '("Custom Title") AND "OnlyThisSkill"';
+  const saved = resolveBooleanSearchForSave({
+    title: "Data Analyst",
+    description: "SQL and Tableau",
+    submittedBoolean: submitted,
+    manualOverride: false,
+  });
+  assert.equal(saved, submitted);
+});
+
+test("force regenerate replaces a submitted Boolean", () => {
+  const saved = resolveBooleanSearchForSave({
+    title: "Data Analyst",
+    description: "SQL and Tableau",
+    submittedBoolean: '("Custom Title") AND "OnlyThisSkill"',
+    manualOverride: true,
+    forceRegenerate: true,
+  });
+  assert.ok(saved && saved.includes("Data Analyst"));
+  assert.ok(!saved.includes("OnlyThisSkill"));
 });
 
 console.log("\nAll boolean generator tests passed.");

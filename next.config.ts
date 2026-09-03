@@ -1,8 +1,30 @@
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { applyMaxListeners } from "./src/lib/runtime/apply-max-listeners";
 
 applyMaxListeners();
+
+function detectPrivateIpv4s(): string[] {
+  const ips: string[] = [];
+  for (const iface of Object.values(os.networkInterfaces())) {
+    if (!iface) continue;
+    for (const addr of iface) {
+      const family = addr.family as string | number;
+      if (family !== "IPv4" && family !== 4) continue;
+      if (addr.internal) continue;
+      const ip = addr.address;
+      if (
+        ip.startsWith("192.168.") ||
+        ip.startsWith("10.") ||
+        /^172\.(1[6-9]|2\d|3[01])\./.test(ip)
+      ) {
+        ips.push(ip);
+      }
+    }
+  }
+  return ips;
+}
 
 function resolveLanConfig() {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? process.env.BETTER_AUTH_URL ?? "http://localhost:3000";
@@ -19,6 +41,15 @@ function resolveLanConfig() {
 
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 const lan = resolveLanConfig();
+const lanHosts = [
+  ...new Set([
+    lan.host,
+    ...detectPrivateIpv4s(),
+    "localhost",
+    "127.0.0.1",
+  ]),
+];
+const actionOrigins = lanHosts.map((host) => `${host}:3000`);
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -33,16 +64,7 @@ const nextConfig = {
       "**/node_modules/terser/**",
     ],
   },
-  allowedDevOrigins: [
-    lan.host,
-    "192.168.179.204",
-    "192.168.1.4",
-    "192.168.1.5",
-    "192.168.1.7",
-    "192.168.29.202",
-    "localhost",
-    "127.0.0.1",
-  ],
+  allowedDevOrigins: lanHosts,
   serverExternalPackages: ["pdf-parse", "pdfjs-dist", "@prisma/client", "prisma"],
   turbopack: {
     root: projectRoot,
@@ -51,7 +73,7 @@ const nextConfig = {
     proxyClientMaxBodySize: "15mb",
     serverActions: {
       bodySizeLimit: "15mb",
-      allowedOrigins: [lan.origin, "192.168.179.204:3000", "localhost:3000", "127.0.0.1:3000"],
+      allowedOrigins: actionOrigins,
     },
   },
 };

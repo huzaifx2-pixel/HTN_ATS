@@ -7,6 +7,7 @@ import {
   EmailMessageEditor,
   type EmailMessageEditorHandle,
 } from "@/components/email/email-message-editor";
+import { MergedEmailPreview } from "@/components/email/email-template-preview";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { insertTextAtCursor } from "@/lib/insert-at-cursor";
@@ -24,10 +25,9 @@ export function CreateEmailTemplateForm() {
   const bodyEditorRef = useRef<EmailMessageEditorHandle>(null);
   const [subject, setSubject] = useState("{{JobTitle}} opportunity at {{Client}}");
   const [body, setBody] = useState(DEFAULT_BODY);
-  const activeFieldRef = useRef<"subject" | "body">("body");
 
   function insertField(field: string) {
-    if (activeFieldRef.current === "subject" && subjectRef.current) {
+    if (document.activeElement === subjectRef.current && subjectRef.current) {
       insertTextAtCursor(subjectRef.current, field, subject, setSubject);
       return;
     }
@@ -35,8 +35,8 @@ export function CreateEmailTemplateForm() {
   }
 
   function insertHtml(html: string) {
-    if (activeFieldRef.current === "subject") {
-      insertField(html.replace(/<[^>]+>/g, ""));
+    if (document.activeElement === subjectRef.current) {
+      insertField("{{ApplyLink}}");
       return;
     }
     bodyEditorRef.current?.insertHtml(html);
@@ -59,26 +59,21 @@ export function CreateEmailTemplateForm() {
           onChange={(event) => setSubject(event.target.value)}
           placeholder="{{JobTitle}} opportunity at {{Client}}"
           className="mt-1"
-          onFocus={() => {
-            activeFieldRef.current = "subject";
-          }}
         />
       </div>
       <div>
-        <Label htmlFor="body">Body</Label>
+        <Label htmlFor="template-body">Body</Label>
         <input type="hidden" name="body" value={body} />
         <EmailMessageEditor
-          id="body"
+          ref={bodyEditorRef}
+          id="template-body"
           value={body}
           onChange={setBody}
-          onFocus={() => {
-            activeFieldRef.current = "body";
-          }}
           className="mt-1"
-          minHeight={220}
+          minHeight={160}
         />
         <p className="mt-1 text-xs text-muted-foreground">
-          Use the link button for a custom URL. Click the Apply button in the message to change the visible text.
+          Press a merge tag below to insert it. The sample preview under the tags shows Jane Doe / Software Engineer / Acme.
         </p>
       </div>
       <MergeFieldsHelp
@@ -86,6 +81,7 @@ export function CreateEmailTemplateForm() {
         onInsert={insertField}
         onInsertHtml={insertHtml}
       />
+      <MergedEmailPreview subject={subject} body={body} />
       <Button type="submit">Save Template</Button>
     </form>
   );

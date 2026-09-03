@@ -12,7 +12,8 @@ import { CursorPagination } from "@/components/shared/cursor-pagination";
 import { SavedViewsBar, SavedViewsList } from "@/components/shared/saved-views-bar";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { Plus, Upload } from "lucide-react";
+import { searchJobsListAction } from "@/app/actions";
+import { Plus, Search, Upload } from "lucide-react";
 import { RegenerateAllBooleansButton } from "@/components/jobs/regenerate-all-booleans-button";
 
 type JobsView = "open" | "on_hold" | "closed";
@@ -33,11 +34,12 @@ export default async function JobsPage({
   const member = await getActiveOrganization(session.user.id);
   if (!member) redirect("/signup");
 
-  const { view: rawView, cursor, search } = await searchParams;
+  const { view: rawView, cursor, search: rawSearch } = await searchParams;
   const view = parseJobsView(rawView);
+  const search = rawSearch?.trim() || undefined;
   const status = view === "closed" ? "CLOSED" : view === "on_hold" ? "ON_HOLD" : "OPEN";
 
-  const { nextCursor, jobCounts, savedViews, missingBooleanCount, jobs, members } =
+  const { nextCursor, searchTotal, jobCounts, savedViews, missingBooleanCount, jobs, members } =
     await withPagePerf("jobs", async () => {
       const [listed, counts, views, missing, orgMembers] = await Promise.all([
         listJobs(member.organizationId, { status, limit: PAGE_SIZE, cursor, search }),
@@ -49,6 +51,7 @@ export default async function JobsPage({
       const withStats = await attachJobMatchEmailStats(member.organizationId, listed.items);
       return {
         nextCursor: listed.nextCursor,
+        searchTotal: listed.total,
         jobCounts: counts,
         savedViews: views,
         missingBooleanCount: missing,
@@ -108,28 +111,62 @@ export default async function JobsPage({
         }))}
       />
 
-      <div className="flex flex-wrap gap-2 border-b border-border pb-1">
-        {tabLinks.map((tab) => (
-          <Link
-            key={tab.view}
-            href={`/jobs?view=${tab.view}`}
-            className={cn(
-              "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
-              view === tab.view
-                ? "bg-brand-700 text-white"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground",
-            )}
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-1">
+        <div className="flex flex-wrap gap-2">
+          {tabLinks.map((tab) => (
+            <Link
+              key={tab.view}
+              href={
+                tab.view === "open"
+                  ? search
+                    ? `/jobs?search=${encodeURIComponent(search)}`
+                    : "/jobs"
+                  : `/jobs?view=${tab.view}${search ? `&search=${encodeURIComponent(search)}` : ""}`
+              }
+              className={cn(
+                "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+                view === tab.view
+                  ? "bg-brand-700 text-white"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
+              )}
+            >
+              {tab.label} ({tab.count})
+            </Link>
+          ))}
+        </div>
+        <form action={searchJobsListAction} className="flex w-full max-w-xs items-center gap-2">
+          {view !== "open" ? <input type="hidden" name="view" value={view} /> : null}
+          <div className="relative min-w-0 flex-1">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="search"
+              name="search"
+              defaultValue={search ?? ""}
+              placeholder="Search job ID, title, or client"
+              aria-label="Search jobs"
+              className="flex h-8 w-full rounded-lg border border-input bg-card pl-8 pr-3 text-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            />
+          </div>
+          <button
+            type="submit"
+            className="h-8 shrink-0 rounded-lg border border-input bg-card px-2.5 text-xs font-medium hover:bg-muted"
           >
-            {tab.label} ({tab.count})
-          </Link>
-        ))}
+            Search
+          </button>
+        </form>
       </div>
 
       <CompactJobTable
         jobs={jobs}
         view={view === "closed" ? "closed" : "open"}
         emptyMessage={
-          view === "open" ? "No open jobs" : view === "on_hold" ? "No jobs on hold" : "No closed jobs"
+          search
+            ? `No jobs match “${search}”`
+            : view === "open"
+              ? "No open jobs"
+              : view === "on_hold"
+                ? "No jobs on hold"
+                : "No closed jobs"
         }
         canDelete={member.role === "OWNER" || member.role === "ADMIN"}
         assignees={members.map((entry) => ({ id: entry.user.id, name: entry.user.name }))}
@@ -139,8 +176,16 @@ export default async function JobsPage({
         basePath="/jobs"
         searchParams={{ view, search, cursor }}
         pageSize={PAGE_SIZE}
-        total={search ? undefined : (typeof total === "object" && "count" in total ? total.count : total)}
-        totalCapped={search ? undefined : (typeof total === "object" && "capped" in total ? total.capped : false)}
+        total={
+          search
+            ? searchTotal
+            : typeof total === "object" && "count" in total
+              ? total.count
+              : total
+        }
+        totalCapped={
+          search ? false : typeof total === "object" && "capped" in total ? total.capped : false
+        }
         shown={jobs.length}
       />
     </div>

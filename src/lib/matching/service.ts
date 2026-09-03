@@ -6,7 +6,6 @@ import {
   generateBooleanSearch,
 } from "@/lib/matching/boolean-search/generate";
 import { notifyCandidateMatched } from "@/lib/services/telegram-notification-service";
-import { blendRecruiterAndSemantic, semanticScoresForJob } from "@/lib/rag/semantic-match";
 import {
   logCandidateRematch,
   type CandidateRematchStats,
@@ -19,6 +18,10 @@ import {
   readLastMatchedFingerprint,
   type MatchRowSnapshot,
 } from "@/lib/matching/match-input";
+import { isMatchingKilled } from "@/lib/matching/kill-switch";
+import { shortlistCandidatesForJob, type RetrievalSignals } from "@/lib/matching/retrieval";
+import { analysisPersistFields, isPersistableMatch } from "@/lib/matching/persist";
+import type { RecruiterMatchAnalysis } from "@/lib/matching/recruiter-engine/types";
 
 type MatchRow = {
   jobId: string;
@@ -30,43 +33,17 @@ type MatchRow = {
   semanticScore: number;
   missingSkills: string[];
   reason: string | null;
-  analysis: object;
+  analysis: RecruiterMatchAnalysis;
+  matchStatus: string | null;
+  confidence: string | null;
+  requirementBreakdown: object | null;
+  retrievalScore: number;
 };
-
-async function applySemanticBoost(organizationId: string, rows: MatchRow[]): Promise<MatchRow[]> {
-  const byJob = new Map<string, MatchRow[]>();
-  for (const row of rows) {
-    const list = byJob.get(row.jobId) ?? [];
-    list.push(row);
-    byJob.set(row.jobId, list);
-  }
-
-  const boosted: MatchRow[] = [];
-  for (const [jobId, jobRows] of byJob) {
-    const eligible = jobRows.filter((row) => row.score >= 55);
-    const scores = await semanticScoresForJob(
-      organizationId,
-      jobId,
-      eligible.map((row) => row.candidateId)
-    );
-    for (const row of jobRows) {
-      if (row.score < 55) {
-        boosted.push({ ...row, semanticScore: 0 });
-        continue;
-      }
-      const blended = blendRecruiterAndSemantic(row.score, scores.get(row.candidateId));
-      boosted.push({ ...row, score: blended.score, semanticScore: blended.semanticScore });
-    }
-  }
-  return boosted;
-}
 
 const UPSERT_BATCH_SIZE = 25;
 const DEFAULT_MATCH_THRESHOLD = 70;
-/** Only persist JobMatch rows at or above this score */
-const MATCH_PERSIST_THRESHOLD = 60;
-/** Store full recruiter analysis JSON only for strong matches */
-const ANALYSIS_PERSIST_THRESHOLD = 70;
+/** Store full recruiter analysis JSON only for persisted matches */
+const ANALYSIS_PERSIST_THRESHOLD = 60;
 
 function resolveWeights(settings?: { matchingWeights?: unknown } | null): Partial<MatchWeights> {
   return (settings?.matchingWeights ?? {}) as Partial<MatchWeights>;
@@ -83,7 +60,7 @@ async function upsertMatchesBatch(
 ): Promise<number> {
   if (rows.length === 0) return 0;
 
-  const persistable = rows.filter((row) => row.score >= MATCH_PERSIST_THRESHOLD);
+  const persistable = rows.filter((row) => isPersistableMatch(row.score, row.analysis));
   if (persistable.length === 0) return 0;
 
   const previousByKey = new Map<string, MatchRowSnapshot>();
@@ -104,6 +81,8 @@ async function upsertMatchesBatch(
         experienceMatch: true,
         descriptionMatch: true,
         semanticScore: true,
+        matchStatus: true,
+        retrievalScore: true,
         missingSkills: true,
         reason: true,
       },
@@ -118,6 +97,8 @@ async function upsertMatchesBatch(
         experienceMatch: row.experienceMatch,
         descriptionMatch: row.descriptionMatch,
         semanticScore: row.semanticScore,
+        matchStatus: row.matchStatus,
+        retrievalScore: row.retrievalScore,
         missingSkills,
         reason: row.reason,
       });
@@ -147,6 +128,7 @@ async function upsertMatchesBatch(
         const analysis = compactAnalysis(row.score, row.analysis);
         const key = `${row.jobId}:${row.candidateId}`;
         const exists = previousByKey.has(key);
+        const extras = analysisPersistFields(row.analysis);
         return prisma.jobMatch.upsert({
           where: { jobId_candidateId: { jobId: row.jobId, candidateId: row.candidateId } },
           create: {
@@ -160,6 +142,12 @@ async function upsertMatchesBatch(
             missingSkills: row.missingSkills,
             reason: row.reason,
             analysis,
+            matchStatus: extras.matchStatus ?? row.matchStatus,
+            confidence: extras.confidence ?? row.confidence,
+            requirementBreakdown: (extras.requirementBreakdown ??
+              row.requirementBreakdown ??
+              Prisma.JsonNull) as Prisma.InputJsonValue,
+            retrievalScore: row.retrievalScore,
           },
           update: {
             score: row.score,
@@ -170,6 +158,12 @@ async function upsertMatchesBatch(
             missingSkills: row.missingSkills,
             reason: row.reason,
             analysis,
+            matchStatus: extras.matchStatus ?? row.matchStatus,
+            confidence: extras.confidence ?? row.confidence,
+            requirementBreakdown: (extras.requirementBreakdown ??
+              row.requirementBreakdown ??
+              Prisma.JsonNull) as Prisma.InputJsonValue,
+            retrievalScore: row.retrievalScore,
             ...(exists ? { computedAt: new Date() } : {}),
           },
         });
@@ -229,6 +223,117 @@ const parsedResumeSelect = {
   structured: true,
 } as const;
 
+function toMatchRow(
+  jobId: string,
+  candidateId: string,
+  result: ReturnType<typeof computeMatch>,
+  extras?: {
+    retrievalScore?: number;
+    retrievalSignals?: RetrievalSignals;
+  }
+): MatchRow {
+  const persist = analysisPersistFields(result.analysis);
+  return {
+    jobId,
+    candidateId,
+    score: result.score,
+    skillsMatch: result.skillsMatch,
+    experienceMatch: result.experienceMatch,
+    descriptionMatch: result.descriptionMatch,
+    semanticScore: 0,
+    missingSkills: result.missingSkills,
+    reason: result.reason,
+    analysis: {
+      ...result.analysis,
+      retrievalScore: extras?.retrievalScore,
+      retrievalSignals: extras?.retrievalSignals,
+    },
+    matchStatus: persist.matchStatus,
+    confidence: persist.confidence,
+    requirementBreakdown: persist.requirementBreakdown,
+    retrievalScore: extras?.retrievalScore ?? 0,
+  };
+}
+
+async function evaluateCandidatesForJob(
+  job: Parameters<typeof computeMatch>[0],
+  organizationId: string,
+  weights: Partial<MatchWeights>,
+  candidateIds: string[] | null,
+  retrieval?: {
+    scores: Map<string, number>;
+    signals: Map<string, RetrievalSignals>;
+  }
+): Promise<MatchRow[]> {
+  const rows: MatchRow[] = [];
+  const BATCH = 200;
+
+  const loadChunk = async (where: { organizationId: string; deletedAt: null; id?: { in: string[] } }) => {
+    const candidates = await prisma.candidate.findMany({
+      where,
+      include: { parsedResume: { select: parsedResumeSelect } },
+      orderBy: { id: "asc" },
+    });
+    if (await isMatchingKilled(organizationId)) return false;
+    for (const candidate of candidates) {
+      if (!hasScorableResume(candidate, candidate.parsedResume)) continue;
+      try {
+        const result = computeMatch(job, candidate, weights, {
+          resumeText: candidate.parsedResume?.rawText ?? undefined,
+          parsedResume: candidate.parsedResume ?? undefined,
+        });
+        rows.push(
+          toMatchRow(job.id, candidate.id, result, {
+            retrievalScore: retrieval?.scores.get(candidate.id),
+            retrievalSignals: retrieval?.signals.get(candidate.id),
+          })
+        );
+      } catch (error) {
+        console.error(`[matching] Failed for candidate ${candidate.id} on job ${job.id}:`, error);
+      }
+    }
+    return true;
+  };
+
+  if (candidateIds) {
+    for (let i = 0; i < candidateIds.length; i += BATCH) {
+      const chunk = candidateIds.slice(i, i + BATCH);
+      const ok = await loadChunk({ organizationId, deletedAt: null, id: { in: chunk } });
+      if (!ok) return rows;
+    }
+    return rows;
+  }
+
+  let cursor: string | undefined;
+  while (true) {
+    const candidates = await prisma.candidate.findMany({
+      where: { organizationId, deletedAt: null },
+      include: { parsedResume: { select: parsedResumeSelect } },
+      orderBy: { id: "asc" },
+      take: BATCH,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    });
+    if (candidates.length === 0) break;
+    if (await isMatchingKilled(organizationId)) return rows;
+    for (const candidate of candidates) {
+      if (!hasScorableResume(candidate, candidate.parsedResume)) continue;
+      try {
+        const result = computeMatch(job, candidate, weights, {
+          resumeText: candidate.parsedResume?.rawText ?? undefined,
+          parsedResume: candidate.parsedResume ?? undefined,
+        });
+        rows.push(toMatchRow(job.id, candidate.id, result));
+      } catch (error) {
+        console.error(`[matching] Failed for candidate ${candidate.id} on job ${job.id}:`, error);
+      }
+    }
+    cursor = candidates[candidates.length - 1]?.id;
+    if (candidates.length < BATCH) break;
+  }
+
+  return rows;
+}
+
 export function jobHasBooleanSearch(job: { booleanSearch?: string | null }): boolean {
   return Boolean(job.booleanSearch?.trim());
 }
@@ -282,71 +387,68 @@ export async function purgeMatchesWithoutBooleanSearch(organizationId: string) {
   return jobs.length;
 }
 
-export async function recomputeJobMatches(jobId: string, organizationId: string) {
+async function notifyMatchesUpdated(organizationId: string, jobIds: string[] = []) {
+  try {
+    const { revalidateOrgPaths } = await import("@/lib/realtime/sync");
+    const { invalidateCacheKeys } = await import("@/lib/cache/ttl-cache");
+    const uniqueJobIds = [...new Set(jobIds.filter(Boolean))];
+    const paths = ["/matching", ...uniqueJobIds.map((id) => `/jobs/${id}`)];
+    await revalidateOrgPaths(paths, {
+      organizationId,
+      type: "jobs",
+      jobId: uniqueJobIds[0],
+    });
+    await invalidateCacheKeys([
+      `pending-match-email-count:${organizationId}`,
+      `dashboard-snapshot:${organizationId}`,
+      `dashboard-data:${organizationId}`,
+    ]);
+  } catch (error) {
+    console.warn("[matching] failed to sync matching page:", error instanceof Error ? error.message : error);
+  }
+}
+
+export async function recomputeJobMatches(
+  jobId: string,
+  organizationId: string,
+  options?: { force?: boolean },
+): Promise<boolean> {
+  if (await isMatchingKilled(organizationId)) return false;
   const existing = await prisma.job.findFirst({
     where: { id: jobId, organizationId },
   });
-  if (!existing) return;
-  const job = await ensureJobBooleanSearch(existing);
+  if (!existing) return true;
+
+  const job = options?.force ? existing : await ensureJobBooleanSearch(existing);
 
   const fingerprint = jobMatchFingerprint(job);
-  const lastFingerprint = readLastMatchedFingerprint(job.metadata);
-  if (lastFingerprint === fingerprint) {
-    const existingMatchCount = await prisma.jobMatch.count({ where: { jobId } });
-    if (existingMatchCount > 0) return;
+  if (!options?.force) {
+    const lastFingerprint = readLastMatchedFingerprint(job.metadata);
+    if (lastFingerprint === fingerprint) {
+      const existingMatchCount = await prisma.jobMatch.count({ where: { jobId } });
+      if (existingMatchCount > 0) return true;
+    }
   }
 
   const settings = await prisma.orgSettings.findUnique({ where: { organizationId } });
   const weights = resolveWeights(settings);
 
-  const rows: MatchRow[] = [];
+  const retrieval = await shortlistCandidatesForJob(organizationId, job);
+  if (await isMatchingKilled(organizationId)) return false;
 
-  const BATCH = 200;
-  let cursor: string | undefined;
-
-  while (true) {
-    const candidates = await prisma.candidate.findMany({
-      where: { organizationId, deletedAt: null },
-      include: { parsedResume: { select: parsedResumeSelect } },
-      orderBy: { id: "asc" },
-      take: BATCH,
-      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
-    });
-
-    if (candidates.length === 0) break;
-
-    for (const candidate of candidates) {
-      if (!hasScorableResume(candidate, candidate.parsedResume)) continue;
-
-      try {
-        const result = computeMatch(job, candidate, weights, {
-          resumeText: candidate.parsedResume?.rawText ?? undefined,
-          parsedResume: candidate.parsedResume ?? undefined,
-        });
-
-        rows.push({
-          jobId,
-          candidateId: candidate.id,
-          score: result.score,
-          skillsMatch: result.skillsMatch,
-          experienceMatch: result.experienceMatch,
-          descriptionMatch: result.descriptionMatch,
-          semanticScore: 0,
-          missingSkills: result.missingSkills,
-          reason: result.reason,
-          analysis: result.analysis,
-        });
-      } catch (error) {
-        console.error(`[matching] Failed for candidate ${candidate.id} on job ${jobId}:`, error);
-      }
+  const rows = await evaluateCandidatesForJob(
+    job,
+    organizationId,
+    weights,
+    retrieval.usedFallbackScan ? null : retrieval.candidateIds,
+    {
+      scores: retrieval.retrievalScores,
+      signals: retrieval.signals,
     }
+  );
+  if (await isMatchingKilled(organizationId)) return false;
 
-    cursor = candidates[candidates.length - 1]?.id;
-    if (candidates.length < BATCH) break;
-  }
-
-  const boosted = await applySemanticBoost(organizationId, rows);
-  const persistable = boosted.filter((row) => row.score >= MATCH_PERSIST_THRESHOLD);
+  const persistable = rows.filter((row) => isPersistableMatch(row.score, row.analysis));
   const persistableIds = new Set(persistable.map((row) => row.candidateId));
 
   if (persistableIds.size === 0) {
@@ -373,6 +475,8 @@ export async function recomputeJobMatches(jobId: string, organizationId: string)
     const { processAutoEmailsForJob } = await import("@/lib/services/auto-email-service");
     processAutoEmailsForJob(jobId, organizationId).catch(console.error);
   }
+  await notifyMatchesUpdated(organizationId, [jobId]);
+  return true;
 }
 
 export async function recomputeCandidateMatches(
@@ -380,6 +484,7 @@ export async function recomputeCandidateMatches(
   organizationId: string,
   options?: { source?: string },
 ): Promise<CandidateRematchStats | null> {
+  if (await isMatchingKilled(organizationId)) return null;
   const started = performance.now();
   const source = options?.source ?? "matching";
 
@@ -391,6 +496,7 @@ export async function recomputeCandidateMatches(
 
   if (!hasScorableResume(candidate, candidate.parsedResume)) {
     await prisma.jobMatch.deleteMany({ where: { candidateId } });
+    await notifyMatchesUpdated(organizationId);
     return {
       candidateId,
       candidateName: `${candidate.firstName} ${candidate.lastName}`.trim() || candidateId,
@@ -441,23 +547,10 @@ export async function recomputeCandidateMatches(
       resumeText: candidate.parsedResume?.rawText ?? undefined,
       parsedResume: candidate.parsedResume ?? undefined,
     });
-
-    return {
-      jobId: job.id,
-      candidateId,
-      score: result.score,
-      skillsMatch: result.skillsMatch,
-      experienceMatch: result.experienceMatch,
-      descriptionMatch: result.descriptionMatch,
-      semanticScore: 0,
-      missingSkills: result.missingSkills,
-      reason: result.reason,
-      analysis: result.analysis,
-    };
+    return toMatchRow(job.id, candidateId, result);
   });
 
-  const boosted = await applySemanticBoost(organizationId, rows);
-  const persistable = boosted.filter((row) => row.score >= MATCH_PERSIST_THRESHOLD);
+  const persistable = rows.filter((row) => isPersistableMatch(row.score, row.analysis));
   const persistableJobIds = new Set(persistable.map((row) => row.jobId));
 
   if (persistableJobIds.size === 0) {
@@ -490,6 +583,7 @@ export async function recomputeCandidateMatches(
     processAutoEmailsForCandidate(candidateId, organizationId).catch(console.error);
   }
 
+  await notifyMatchesUpdated(organizationId, [...persistableJobIds]);
   return stats;
 }
 
@@ -508,6 +602,7 @@ export async function computeSuggestedJobsForParsed(
   },
   limit = 5
 ) {
+  if (await isMatchingKilled(organizationId)) return [];
   const jobs = await prisma.job.findMany({
     where: { organizationId, status: "OPEN" },
     orderBy: [{ postedAt: "desc" }, { createdAt: "desc" }],

@@ -1,3 +1,5 @@
+"use client";
+
 import Link from "next/link";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -27,6 +29,7 @@ export function CursorPagination({
       if (value) params.set(key, value);
     }
     if (cursor) params.set("cursor", cursor);
+    else params.delete("cursor");
     const qs = params.toString();
     return qs ? `${basePath}?${qs}` : basePath;
   };
@@ -35,7 +38,7 @@ export function CursorPagination({
     <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-4 py-3 text-xs text-muted-foreground">
       <span>
         {total != null && shown != null
-          ? `Showing ${shown} of ${total.toLocaleString()}${totalCapped || nextCursor ? "+" : ""}`
+          ? `Showing ${shown} of ${total.toLocaleString("en-US")}${totalCapped ? "+" : ""}`
           : shown != null && nextCursor
             ? `Showing ${shown} — more available`
             : shown != null
@@ -50,7 +53,7 @@ export function CursorPagination({
         )}
         {nextCursor ? (
           <Button variant="outline" size="sm" asChild>
-            <Link href={buildHref(nextCursor)}>Load next {pageSize}</Link>
+            <Link href={buildHref(nextCursor)}>Next {pageSize}</Link>
           </Button>
         ) : (
           <span className={cn("self-center px-2", !searchParams.cursor && "hidden")}>End of list</span>

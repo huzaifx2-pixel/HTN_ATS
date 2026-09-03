@@ -39,9 +39,16 @@ export function CountdownBadge({ days }: { days: number }) {
   return <Badge variant={variant}>{days} Days Left</Badge>;
 }
 
-export function MatchScoreBadge({ score }: { score: number }) {
-  const color = score >= 70 ? "text-green-600" : score >= 40 ? "text-amber-600" : "text-muted-foreground";
-  return <span className={cn("font-semibold", color)}>{score}%</span>;
+export function MatchScoreBadge({ score, status }: { score: number; status?: string | null }) {
+  const color =
+    status === "EXCELLENT" || score >= 90
+      ? "text-emerald-700"
+      : status === "STRONG" || score >= 70
+        ? "text-green-600"
+        : status === "POTENTIAL" || score >= 60
+          ? "text-amber-600"
+          : "text-muted-foreground";
+  return <span className={cn("font-semibold", color)}>{Math.round(score)}%</span>;
 }
 
 export function LinkedInMatchScore({

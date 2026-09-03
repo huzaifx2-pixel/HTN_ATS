@@ -257,9 +257,11 @@ export function resolveBooleanSearchForSave(input: {
     return generated || submitted || null;
   }
 
-  if (input.manualOverride && submitted) {
+  // The job form always submits the current editor value. Persist it so Save
+  // cannot silently replace a recruiter's Boolean with a regenerated query.
+  if (submitted) {
     return submitted;
   }
 
-  return generated || submitted || null;
+  return generated || null;
 }

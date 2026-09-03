@@ -222,3 +222,13 @@ export function validateBooleanQuery(query: string): string | null {
   const result = parseBooleanQuery(query);
   return result.ok ? null : result.error.message;
 }
+
+/** Positive terms only — NOT clauses are retrieval exclusions, not discovery keywords. */
+export function collectPositiveBooleanTerms(node: BooleanNode, negated = false): string[] {
+  if (node.type === "term") return negated ? [] : [node.value];
+  if (node.type === "not") return collectPositiveBooleanTerms(node.child, !negated);
+  return [
+    ...collectPositiveBooleanTerms(node.left, negated),
+    ...collectPositiveBooleanTerms(node.right, negated),
+  ];
+}

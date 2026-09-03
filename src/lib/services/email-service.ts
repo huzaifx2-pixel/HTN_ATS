@@ -14,6 +14,11 @@ import { notifyEmailSent } from "@/lib/services/telegram-notification-service";
 import { scheduleIndexSource } from "@/lib/rag/indexer";
 import { randomUUID } from "node:crypto";
 import { assertCandidateCanBeContacted } from "@/lib/services/contact-compliance-service";
+import {
+  getFollowUpRecipientsByJob,
+  getPendingMatchRecipientsByJob,
+  uniqueJobIds,
+} from "@/lib/services/match-email-outreach-service";
 
 import { getAppBaseUrl } from "@/lib/runtime/app-url";
 
@@ -321,21 +326,44 @@ export async function deleteEmailTemplate(id: string) {
 }
 
 export async function seedDefaultEmailTemplates(organizationId: string) {
-  const count = await prisma.emailTemplate.count({ where: { organizationId } });
-  if (count > 0) return;
-
   const { DEFAULT_EMAIL_TEMPLATES } = await import("@/lib/constants/email");
-  for (const tpl of DEFAULT_EMAIL_TEMPLATES) {
-    await prisma.emailTemplate.create({
-      data: {
-        organizationId,
-        name: tpl.name,
-        subject: tpl.subject,
-        body: tpl.body,
-        isDefault: true,
-      },
-    });
+  const count = await prisma.emailTemplate.count({ where: { organizationId } });
+  if (count === 0) {
+    for (const tpl of DEFAULT_EMAIL_TEMPLATES) {
+      await prisma.emailTemplate.create({
+        data: {
+          organizationId,
+          name: tpl.name,
+          subject: tpl.subject,
+          body: tpl.body,
+          isDefault: true,
+        },
+      });
+    }
+    return;
   }
+
+  const followUp = DEFAULT_EMAIL_TEMPLATES.find((tpl) => /follow-?up/i.test(tpl.name));
+  if (!followUp) return;
+
+  const existing = await prisma.emailTemplate.findFirst({
+    where: {
+      organizationId,
+      name: { equals: followUp.name, mode: "insensitive" },
+    },
+    select: { id: true },
+  });
+  if (existing) return;
+
+  await prisma.emailTemplate.create({
+    data: {
+      organizationId,
+      name: followUp.name,
+      subject: followUp.subject,
+      body: followUp.body,
+      isDefault: true,
+    },
+  });
 }
 
 export async function sendTemplatedEmailToCandidate(input: {
@@ -378,6 +406,7 @@ export async function sendBulkTemplatedEmailsToCandidates(input: {
   body?: string;
   userId: string;
   organizationId?: string;
+  skipDuplicates?: boolean;
   onProgress?: (event: BulkEmailProgressEvent) => void | Promise<void>;
 }) {
   if (input.candidateIds.length === 0) {
@@ -389,6 +418,7 @@ export async function sendBulkTemplatedEmailsToCandidates(input: {
     : await requirePermission("send_email");
   const organizationId = ctx.organizationId;
   const candidateIds = [...new Set(input.candidateIds)];
+  const skipDuplicates = input.skipDuplicates !== false;
 
   const [job, recruiter, requestedTemplate, candidates, alreadyEmailed, gmail] = await Promise.all([
     prisma.job.findFirst({
@@ -404,11 +434,13 @@ export async function sendBulkTemplatedEmailsToCandidates(input: {
     prisma.candidate.findMany({
       where: { id: { in: candidateIds }, organizationId, deletedAt: null },
     }),
-    prisma.emailMessage.findMany({
-      where: { jobId: input.jobId, candidateId: { in: candidateIds }, sentAt: { not: null } },
-      select: { candidateId: true },
-      distinct: ["candidateId"],
-    }),
+    skipDuplicates
+      ? prisma.emailMessage.findMany({
+          where: { jobId: input.jobId, candidateId: { in: candidateIds }, sentAt: { not: null } },
+          select: { candidateId: true },
+          distinct: ["candidateId"],
+        })
+      : Promise.resolve([] as Array<{ candidateId: string | null }>),
     getGmailSendCredentials(input.userId),
   ]);
 
@@ -581,6 +613,93 @@ export async function sendBulkTemplatedEmailsToCandidates(input: {
     recipients: sent,
     failures,
   };
+}
+
+export type MatchingHubSendKind = "outreach" | "followup";
+
+export type MatchingHubProgressEvent = BulkEmailProgressEvent & {
+  jobTitle?: string;
+};
+
+export async function sendMatchingHubEmails(input: {
+  kind: MatchingHubSendKind;
+  jobId?: string;
+  jobIds?: string[];
+  templateId?: string;
+  customLink?: string;
+  subject?: string;
+  body?: string;
+  userId: string;
+  organizationId: string;
+  onProgress?: (event: MatchingHubProgressEvent) => void | Promise<void>;
+}) {
+  const jobIds = uniqueJobIds({ jobId: input.jobId, jobIds: input.jobIds });
+  if (jobIds.length === 0) {
+    throw new Error("Select at least one job to email");
+  }
+
+  const groups =
+    input.kind === "followup"
+      ? await getFollowUpRecipientsByJob(input.organizationId, {
+          jobIds,
+          limit: jobIds.length === 1 ? 500 : 2000,
+        })
+      : await getPendingMatchRecipientsByJob(input.organizationId, {
+          jobIds,
+          limit: jobIds.length === 1 ? 500 : 2000,
+        });
+
+  const total = groups.reduce((sum, group) => sum + group.recipients.length, 0);
+  if (total === 0) {
+    throw new Error(input.kind === "followup" ? "No follow-up recipients" : "No remaining matches to email");
+  }
+
+  let sent = 0;
+  let failed = 0;
+  let skipped = 0;
+  const failures: Array<{ candidateId: string; error: string }> = [];
+
+  await input.onProgress?.({
+    sent: 0,
+    failed: 0,
+    skipped: 0,
+    total,
+    currentRecipient: groups[0]?.recipients[0]?.name ?? null,
+    candidateId: groups[0]?.recipients[0]?.candidateId,
+    jobTitle: groups[0]?.jobTitle,
+  });
+
+  for (const group of groups) {
+    if (group.recipients.length === 0) continue;
+    const result = await sendBulkTemplatedEmailsToCandidates({
+      jobId: group.jobId,
+      candidateIds: group.recipients.map((recipient) => recipient.candidateId),
+      templateId: input.templateId,
+      customLink: input.customLink ?? group.applyLink,
+      subject: input.subject,
+      body: input.body,
+      userId: input.userId,
+      organizationId: input.organizationId,
+      skipDuplicates: input.kind === "outreach",
+      onProgress: async (event) => {
+        await input.onProgress?.({
+          sent: sent + event.sent,
+          failed: failed + event.failed,
+          skipped: skipped + event.skipped,
+          total,
+          currentRecipient: event.currentRecipient,
+          candidateId: event.candidateId,
+          jobTitle: group.jobTitle,
+        });
+      },
+    });
+    sent += result.sent;
+    failed += result.failed;
+    skipped += result.skipped;
+    failures.push(...result.failures);
+  }
+
+  return { sent, failed, skipped, total, failures };
 }
 
 async function mapPool<T>(items: T[], concurrency: number, worker: (item: T) => Promise<void>) {

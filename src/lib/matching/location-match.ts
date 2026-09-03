@@ -22,8 +22,11 @@ function textMentionsAny(text: string, tokens: string[]): boolean {
 
 export function evaluateLocationMatch(job: Job, candidate: Candidate, resumeText: string) {
   const jobCountry = job.country?.trim();
-  const jobIsGlobal = !jobCountry || jobCountry === "Global";
-  const jobIsRemote = Boolean(job.remote);
+  const locationBlob = `${job.location ?? ""} ${job.city ?? ""} ${job.workplaceType ?? ""}`;
+  const jobIsRemote = Boolean(job.remote) || /\bremote\b/i.test(locationBlob);
+  const jobIsGlobal =
+    jobCountry === "Global" ||
+    (!jobCountry && !job.city?.trim() && !job.location?.trim() && !jobIsRemote);
   const jobTokens = locationTokens(job.location, job.city, job.country, jobIsRemote ? "remote" : undefined);
 
   const candidateTokens = locationTokens(
@@ -34,8 +37,6 @@ export function evaluateLocationMatch(job: Job, candidate: Candidate, resumeText
   );
 
   const resumeSnippet = resumeText.slice(0, 4000);
-  const resumeRemote =
-    /\bremote\b|\bwork from home\b|\bwfh\b|\bdistributed\b|\banywhere\b/i.test(resumeSnippet);
 
   if (jobIsGlobal) {
     return {
@@ -47,6 +48,16 @@ export function evaluateLocationMatch(job: Job, candidate: Candidate, resumeText
     };
   }
 
+  if (jobIsRemote) {
+    return {
+      scoreRatio: 1,
+      matched: ["Remote"],
+      missing: [] as string[],
+      reasoning: "Role is remote — location is not a geographic restriction.",
+      confidence: "Medium" as const,
+    };
+  }
+
   if (candidateTokens.length === 0 && !textMentionsAny(resumeSnippet, jobTokens)) {
     return {
       scoreRatio: 0,
@@ -54,16 +65,6 @@ export function evaluateLocationMatch(job: Job, candidate: Candidate, resumeText
       missing: [job.location ?? job.country ?? "Location"],
       reasoning: "Candidate location was not found in profile or resume contact section.",
       confidence: "Low" as const,
-    };
-  }
-
-  if (jobIsRemote && (resumeRemote || candidateTokens.some((token) => token.includes("remote")))) {
-    return {
-      scoreRatio: 1,
-      matched: ["Remote"],
-      missing: [] as string[],
-      reasoning: "Role is remote and the candidate indicates remote eligibility.",
-      confidence: "Medium" as const,
     };
   }
 
@@ -96,7 +97,7 @@ export function evaluateLocationMatch(job: Job, candidate: Candidate, resumeText
   }
 
   return {
-    scoreRatio: 0.2,
+    scoreRatio: 0,
     matched: [] as string[],
     missing: [job.location ?? job.country ?? "Location"],
     reasoning: "Candidate location does not clearly match the job location requirements.",

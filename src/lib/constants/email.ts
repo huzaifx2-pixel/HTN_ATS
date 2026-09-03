@@ -21,7 +21,7 @@ export const MERGE_FIELD_HELP = [
   { field: "{{Salary}}", description: "Salary range with currency and period (/hr, /month, /annum)" },
   {
     field: "{{ApplyLink}}",
-    description: "Clickable apply link — you choose the visible text (e.g. Apply here)",
+    description: "Clickable Apply here link — filled with the job apply URL when the email is sent",
   },
 ] as const;
 
@@ -64,32 +64,79 @@ export function mergeFieldFromHref(href: string): "ApplyLink" | "ReferralLink" |
   return null;
 }
 
+function escapeAttr(value: string) {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+}
+
+function replaceMergeToken(template: string, key: string, value: string) {
+  return template.replace(new RegExp(`\\{\\{\\s*${key}\\s*\\}\\}`, "gi"), () => value);
+}
+
+function applyHyperlinkMergeField(
+  template: string,
+  key: "ApplyLink" | "ReferralLink",
+  url: string,
+  asHtml: boolean,
+) {
+  const attrUrl = escapeAttr(url);
+  const placeholder = MERGE_LINK_PLACEHOLDERS[key];
+  let result = template.replaceAll(placeholder, url);
+
+  result = result.replace(
+    new RegExp(`<a\\b([^>]*data-merge-field="${key}"[^>]*)>`, "gi"),
+    (_match, attrs: string) => {
+      if (/href\s*=/i.test(attrs)) {
+        return `<a${attrs.replace(/href\s*=\s*(["']).*?\1/i, `href="${attrUrl}"`)}>`;
+      }
+      return `<a href="${attrUrl}"${attrs}>`;
+    },
+  );
+
+  result = result.replace(
+    new RegExp(`href\\s*=\\s*(["'])\\{\\{\\s*${key}\\s*\\}\\}\\1`, "gi"),
+    `href="${attrUrl}"`,
+  );
+
+  result = replaceMergeToken(
+    result,
+    key,
+    asHtml ? `<a href="${attrUrl}">Apply here</a>` : url,
+  );
+
+  return result;
+}
+
 export function applyMergeFields(template: string, data: Record<string, string>): string {
   let result = template;
-  for (const [key, value] of Object.entries(data)) {
-    result = result.replace(new RegExp(`\\{\\{${key}\\}\\}`, "g"), value);
-    const placeholder = MERGE_LINK_PLACEHOLDERS[key as keyof typeof MERGE_LINK_PLACEHOLDERS];
-    if (placeholder && value) {
-      result = result.replaceAll(placeholder, value);
-    }
-  }
+  const asHtml = /<[a-z][\s\S]*>/i.test(template);
 
   for (const key of ["ApplyLink", "ReferralLink"] as const) {
     const url = data[key];
     if (!url) continue;
-    result = result.replace(
-      new RegExp(`<a\\b([^>]*data-merge-field="${key}"[^>]*)>`, "gi"),
-      (_match, attrs: string) => {
-        if (/href\s*=/i.test(attrs)) {
-          return `<a${attrs.replace(/href\s*=\s*(["']).*?\1/i, `href="${url}"`)}>`;
-        }
-        return `<a href="${url}"${attrs}>`;
-      }
-    );
+    result = applyHyperlinkMergeField(result, key, url, asHtml);
+  }
+
+  for (const [key, value] of Object.entries(data)) {
+    if (key === "ApplyLink" || key === "ReferralLink") continue;
+    result = replaceMergeToken(result, key, value);
   }
 
   return result;
 }
+
+export const SAMPLE_EMAIL_MERGE_DATA: Record<string, string> = {
+  FirstName: "Jane",
+  LastName: "Doe",
+  JobTitle: "Software Engineer",
+  Client: "Acme",
+  Recruiter: "Alex Recruiter",
+  JobID: "ACME-001",
+  Location: "Remote",
+  Salary: "$120,000/annum",
+  ApplyLink: "https://headsbase.app/apply/sample",
+  ReferralLink: "https://headsbase.app/apply/sample",
+  CustomLink: "https://headsbase.app/apply/sample",
+};
 
 export function buildEmailMergeData(input: {
   candidate: { firstName: string; lastName: string; email?: string | null };
@@ -154,6 +201,23 @@ export const DEFAULT_EMAIL_TEMPLATES = [
 <div>Salary: {{Salary}}</div>
 <div><br></div>
 <div>Please use this link for next steps: <a href="https://headsbase.app/__merge__/ApplyLink" data-merge-field="ApplyLink">Open opportunity</a></div>
+<div><br></div>
+<div>Happy to answer any questions.</div>
+<div><br></div>
+    <div>Best,</div>
+<div>{{Recruiter}}</div>`,
+  },
+  {
+    name: "Follow-up",
+    subject: "Following up: {{JobTitle}} at {{Client}}",
+    body: `<div>Hi {{FirstName}},</div>
+<div><br></div>
+<div>Just following up on the {{JobTitle}} role at {{Client}} I shared recently.</div>
+<div><br></div>
+<div>Location: {{Location}}</div>
+<div>Salary: {{Salary}}</div>
+<div><br></div>
+<div>If you're interested, you can apply here: <a href="https://headsbase.app/__merge__/ApplyLink" data-merge-field="ApplyLink">View the role and apply</a></div>
 <div><br></div>
 <div>Happy to answer any questions.</div>
 <div><br></div>

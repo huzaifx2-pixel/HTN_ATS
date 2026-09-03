@@ -8,7 +8,9 @@ import { getEmailCampaignStats, listEmailTemplates, seedDefaultEmailTemplates } 
 import { getGmailConnection } from "@/lib/services/gmail-service";
 import { MatchCandidateEmail } from "@/components/jobs/match-candidate-email";
 import { MatchBulkEmail } from "@/components/jobs/match-bulk-email";
+import { MatchingRematchButton } from "@/components/matching/matching-rematch-button";
 import { MatchAnalysisPanel } from "@/components/jobs/match-analysis-panel";
+import { MatchWhySummary, type MatchWhyData, hasBooleanLocationBreakdown } from "@/components/jobs/match-why-summary";
 import { getJobReferralUrl, formatJobTimestamp } from "@/lib/utils";
 import { PageHeader, EmptyState } from "@/components/shared/dashboard-widgets";
 import { StatusBadge, MatchScoreBadge, StageBadge } from "@/components/ui/badge";
@@ -56,6 +58,7 @@ export default async function JobDetailPage({
   const needsActivities = tab === "activity";
   const needsClients = tab === "edit";
   const needsEmail = tab === "email" || needsInternalMatches;
+  const needsEmailTemplates = needsEmail || tab === "edit";
 
   const needsAnalytics = tab === "analytics";
 
@@ -67,7 +70,7 @@ export default async function JobDetailPage({
     needsApplications ? getJobApplications(jobId, member.organizationId) : Promise.resolve([]),
     needsInternalMatches
       ? getJobMatches(jobId, member.organizationId, { cursor })
-      : Promise.resolve({ items: [], total: 0, nextCursor: undefined as string | undefined }),
+      : Promise.resolve({ items: [], total: 0, nextCursor: undefined as string | undefined, rematchQueued: false }),
     needsActivities ? getJobActivities(jobId, member.organizationId) : Promise.resolve([]),
     tab === "email" ? getEmailCampaignStats(jobId, member.organizationId) : Promise.resolve(null),
     needsClients ? listClients(member.organizationId) : Promise.resolve([]),
@@ -76,7 +79,7 @@ export default async function JobDetailPage({
   ]);
 
   let emailTemplates: Awaited<ReturnType<typeof listEmailTemplates>> = [];
-  if (needsEmail) {
+  if (needsEmailTemplates) {
     await seedDefaultEmailTemplates(member.organizationId);
     emailTemplates = await listEmailTemplates(member.organizationId, jobId);
   }
@@ -270,19 +273,20 @@ export default async function JobDetailPage({
           <CardHeader className="flex flex-row items-center justify-between gap-4 space-y-0">
             <div>
               <CardTitle className="text-sm">Matching Candidates</CardTitle>
-              {job.booleanSearch ? (
-                <p className="text-xs text-muted-foreground mt-1">
+              <p className="text-xs text-muted-foreground mt-1">
                   Remaining pool — showing {matches.items.length}
                   {matches.total > matches.items.length ? ` of ${matches.total}` : ""} candidates.
-                  Emailed matches move to Applicants.
+                  Matches are based on Boolean search and location only. Strong+ matches (70+) are eligible for Email all. Emailed matches move to Applicants.
+              </p>
+              {matches.rematchQueued ? (
+                <p className="text-xs text-amber-700 mt-2">
+                  Refreshing this list with Boolean + location only. Reload in a minute to see updated scores.
                 </p>
-              ) : (
-                <p className="text-xs text-muted-foreground mt-1">
-                  Add a Boolean Search query in Job Settings to enable resume matching for this job.
-                </p>
-              )}
+              ) : null}
             </div>
-            {job.booleanSearch && matches.total > 0 && (
+            <div className="flex items-center gap-2 shrink-0">
+              <MatchingRematchButton jobId={jobId} jobTitle={job.title} />
+            {matches.total > 0 && (
               <MatchBulkEmail
               jobId={jobId}
               remainingCount={matches.total}
@@ -298,15 +302,9 @@ export default async function JobDetailPage({
               userEmail={gmail?.email}
             />
             )}
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            {!job.booleanSearch ? (
-              <EmptyState
-                title="Matching disabled"
-                description="Set a Boolean Search query in Job Settings to match candidates against this job."
-              />
-            ) : (
-              <>
             <p className="text-sm text-muted-foreground">
               <span className="font-medium text-foreground">{jobLocation}</span>
               {" · "}
@@ -316,7 +314,7 @@ export default async function JobDetailPage({
               {matches.items.length === 0 ? (
                 <EmptyState
                   title="No remaining matches"
-                  description="Emailed candidates are on the Applicants tab. Add a Boolean query or wait for matching if the pool is empty."
+                  description="Potential matches (score 60+) appear here after rematch. Emailed candidates move to Applicants."
                 />
               ) : (
                 matches.items.map((m) => (
@@ -329,7 +327,13 @@ export default async function JobDetailPage({
                           {m.candidate.firstName} {m.candidate.lastName}
                         </Link>
                         <div className="text-xs text-muted-foreground">{m.candidate.currentRole}</div>
-                        <div className="text-xs text-muted-foreground mt-1">{m.reason}</div>
+                        <MatchWhySummary
+                          data={{
+                            matchStatus: m.matchStatus,
+                            confidence: m.confidence,
+                            requirementBreakdown: (m.requirementBreakdown ?? null) as MatchWhyData["requirementBreakdown"],
+                          }}
+                        />
                         <MatchAnalysisPanel
                           jobId={jobId}
                           candidateId={m.candidateId}
@@ -337,13 +341,16 @@ export default async function JobDetailPage({
                         />
                       </div>
                       <div className="text-right shrink-0 flex flex-col items-end gap-2">
-                        <MatchScoreBadge score={m.score} />
-                        <div className="text-[10px] text-muted-foreground">
-                          JD {m.descriptionMatch}% · Skills {m.skillsMatch}% · Exp {m.experienceMatch}%
-                          {"semanticScore" in m && Number(m.semanticScore) > 0
-                            ? ` · Semantic ${Math.round(Number(m.semanticScore))}%`
-                            : ""}
-                        </div>
+                        <MatchScoreBadge score={m.score} status={m.matchStatus} />
+                        {hasBooleanLocationBreakdown(
+                          (m.requirementBreakdown ?? null) as MatchWhyData["requirementBreakdown"],
+                        ) ? (
+                          <div className="text-[10px] text-muted-foreground">
+                            Boolean {m.skillsMatch}% · Location {m.descriptionMatch}%
+                          </div>
+                        ) : (
+                          <div className="text-[10px] text-muted-foreground">Rematch to refresh Boolean + location score</div>
+                        )}
                           <div className="flex gap-2">
                             <MatchCandidateEmail
                               jobId={jobId}
@@ -378,8 +385,6 @@ export default async function JobDetailPage({
               total={matches.total}
               shown={matches.items.length}
             />
-              </>
-            )}
           </CardContent>
         </Card>
           )}

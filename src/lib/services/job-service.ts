@@ -5,7 +5,6 @@ import { jobHasBooleanSearch } from "@/lib/matching/service";
 import { enqueueJobMatch } from "@/lib/queue/match-queue";
 import { upsertJobSearchIndex } from "@/lib/search/search-index";
 import { invalidateOrgCache } from "@/lib/cache/ttl-cache";
-import { searchJobIds } from "@/lib/search/job-fts";
 import { createHash } from "crypto";
 import { z } from "zod";
 import { Prisma, type JobStatus, type JobSource } from "@prisma/client";
@@ -216,6 +215,19 @@ function applyEffectiveMatchCount<T extends JobWithMatchCount>(job: T): T {
 
 export type JobDashboardBucket = "expiring" | "published" | "on_hold";
 
+function buildJobSearchWhere(search?: string): Prisma.JobWhereInput | undefined {
+  const needle = search?.replace(/\s+/g, " ").trim();
+  if (!needle) return undefined;
+  return {
+    OR: [
+      { title: { contains: needle, mode: "insensitive" } },
+      { jobCode: { contains: needle, mode: "insensitive" } },
+      { location: { contains: needle, mode: "insensitive" } },
+      { client: { name: { contains: needle, mode: "insensitive" } } },
+    ],
+  };
+}
+
 function buildJobBucketWhere(bucket: JobDashboardBucket) {
   const now = new Date();
   const in14Days = new Date(now);
@@ -250,23 +262,20 @@ export async function listJobs(organizationId: string, options?: {
       : OPEN_JOB_ORDER;
 
   return timeAsync("jobs.list", async () => {
-    const searchIds = options?.search
-      ? await searchJobIds(organizationId, options.search, 200)
-      : null;
-    if (searchIds && searchIds.length === 0) {
-      return { items: [], nextCursor: undefined as string | undefined };
-    }
+    const searchWhere = buildJobSearchWhere(options?.search);
+    const where: Prisma.JobWhereInput = {
+      organizationId,
+      ...(options?.bucket
+        ? buildJobBucketWhere(options.bucket)
+        : options?.status
+          ? { status: options.status }
+          : {}),
+      ...(searchWhere ?? {}),
+    };
 
-    const jobs = await prisma.job.findMany({
-      where: {
-        organizationId,
-        ...(options?.bucket
-          ? buildJobBucketWhere(options.bucket)
-          : options?.status
-            ? { status: options.status }
-            : {}),
-        ...(searchIds ? { id: { in: searchIds } } : {}),
-      },
+    const [jobs, total] = await Promise.all([
+      prisma.job.findMany({
+      where,
       select: {
         id: true,
         jobCode: true,
@@ -287,13 +296,16 @@ export async function listJobs(organizationId: string, options?: {
       orderBy,
       take: limit + 1,
       ...(options?.cursor && { cursor: { id: options.cursor }, skip: 1 }),
-    });
+    }),
+      searchWhere ? prisma.job.count({ where }) : Promise.resolve(undefined),
+    ]);
 
     const hasMore = jobs.length > limit;
     const items = (hasMore ? jobs.slice(0, limit) : jobs).map(applyEffectiveMatchCount);
     return {
       items,
       nextCursor: hasMore ? items[items.length - 1]?.id : undefined,
+      total,
     };
   });
 }

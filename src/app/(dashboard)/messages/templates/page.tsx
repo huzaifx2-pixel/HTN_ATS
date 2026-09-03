@@ -50,15 +50,12 @@ export default async function EmailTemplatesPage() {
               templates.map((tpl) => (
                 <div key={tpl.id} className="rounded-lg border p-4 space-y-2">
                   <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <div className="font-medium text-sm">{tpl.name}</div>
-                      <div className="text-xs text-muted-foreground">{tpl.subject}</div>
-                    </div>
+                    <div className="font-medium text-sm">{tpl.name}</div>
                     <form action={deleteEmailTemplateAction.bind(null, tpl.id)}>
                       <Button type="submit" variant="outline" size="sm">Delete</Button>
                     </form>
                   </div>
-                  <EmailTemplatePreview html={tpl.body} />
+                  <EmailTemplatePreview subject={tpl.subject} html={tpl.body} />
                 </div>
               ))
             )}

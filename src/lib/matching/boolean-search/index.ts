@@ -3,6 +3,7 @@ export type { JobRequirements, BooleanSearchAnalysis } from "./types";
 export {
   parseBooleanQuery,
   validateBooleanQuery,
+  collectPositiveBooleanTerms,
   type BooleanNode,
   type BooleanParseResult,
 } from "./parse";

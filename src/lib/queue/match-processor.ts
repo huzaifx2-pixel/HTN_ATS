@@ -1,7 +1,8 @@
 import { prisma } from "@/lib/db";
 import { registerWorker, runWorker } from "@/lib/jobs/scheduler-status";
+import { isMatchingKilled, loadMatchingKillSwitchCache, parkMatchWorkItem } from "@/lib/matching/kill-switch";
 import { getRedis } from "@/lib/queue/redis";
-import { MATCH_QUEUE_NAME } from "@/lib/queue/match-queue";
+import { MATCH_QUEUE_NAME, FORCE_REMATCH_SOURCE } from "@/lib/queue/match-queue";
 
 type ClaimedWork = {
   id: string;
@@ -63,15 +64,30 @@ async function finish(id: string, error?: string) {
   });
 }
 
-export async function processMatchWorkItem(item: ClaimedWork) {
+export async function processMatchWorkItem(item: ClaimedWork): Promise<boolean> {
+  if (await isMatchingKilled(item.organizationId)) {
+    await parkMatchWorkItem(item.id);
+    return false;
+  }
   const { recomputeCandidateMatches, recomputeJobMatches } = await import("@/lib/matching/service");
   if (item.type === "CANDIDATE" && item.candidateId) {
     await recomputeCandidateMatches(item.candidateId, item.organizationId, { source: item.source });
-    return;
+    if (await isMatchingKilled(item.organizationId)) {
+      await parkMatchWorkItem(item.id);
+      return false;
+    }
+    return true;
   }
   if (item.type === "JOB" && item.jobId) {
-    await recomputeJobMatches(item.jobId, item.organizationId);
+    const completed = await recomputeJobMatches(item.jobId, item.organizationId, {
+      force: item.source === FORCE_REMATCH_SOURCE,
+    });
+    if (!completed) {
+      await parkMatchWorkItem(item.id);
+      return false;
+    }
   }
+  return true;
 }
 
 export async function processMatchQueue(limit = 2) {
@@ -81,7 +97,8 @@ export async function processMatchQueue(limit = 2) {
     let failed = 0;
     for (const item of claimed) {
       try {
-        await processMatchWorkItem(item);
+        const processed = await processMatchWorkItem(item);
+        if (!processed) continue;
         await finish(item.id);
         completed += 1;
       } catch (error) {
@@ -101,6 +118,7 @@ export function startMatchQueueProcessor(options?: { standalone?: boolean }) {
   pollerStarted = true;
 
   registerWorker("match-queue", true, 2500);
+  void loadMatchingKillSwitchCache();
 
   const tick = () => {
     void processMatchQueue(2).catch((error) => {
@@ -138,8 +156,8 @@ async function startBullWorker() {
       const item = claimed[0];
       if (!item) return;
       try {
-        await processMatchWorkItem(item);
-        await finish(item.id);
+        const processed = await processMatchWorkItem(item);
+        if (processed) await finish(item.id);
       } catch (error) {
         await finish(item.id, error instanceof Error ? error.message : String(error));
         throw error;

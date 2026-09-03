@@ -43,6 +43,9 @@ export function MatchCandidateEmail({
   templates,
   gmailConnected,
   userEmail,
+  skipDuplicateCheck = false,
+  triggerLabel = "Email",
+  dialogTitle,
 }: {
   jobId: string;
   candidateId: string;
@@ -58,6 +61,9 @@ export function MatchCandidateEmail({
   templates: Template[];
   gmailConnected: boolean;
   userEmail?: string;
+  skipDuplicateCheck?: boolean;
+  triggerLabel?: string;
+  dialogTitle?: string;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -75,7 +81,7 @@ export function MatchCandidateEmail({
   const resolvedApplyLink = normalizeApplyUrl(editedApplyLink, applyLink);
 
   function insertMergeField(field: string) {
-    if (activeFieldRef.current === "subject" && subjectRef.current) {
+    if (document.activeElement === subjectRef.current && subjectRef.current) {
       insertTextAtCursor(subjectRef.current, field, subject, setSubject);
       return;
     }
@@ -83,9 +89,8 @@ export function MatchCandidateEmail({
   }
 
   function insertMergeHtml(html: string) {
-    if (activeFieldRef.current === "subject") {
-      const text = html.replace(/<[^>]+>/g, "");
-      insertMergeField(text);
+    if (document.activeElement === subjectRef.current) {
+      insertMergeField("{{ApplyLink}}");
       return;
     }
     bodyEditorRef.current?.insertHtml(html);
@@ -139,6 +144,7 @@ export function MatchCandidateEmail({
           customLink: resolvedApplyLink,
           subject,
           body,
+          skipDuplicateCheck,
         }),
       });
       const data = await res.json();
@@ -178,12 +184,12 @@ export function MatchCandidateEmail({
       }}
     >
       <DialogTrigger asChild>
-        <Button size="sm" variant="outline">Email</Button>
+        <Button size="sm" variant="outline">{triggerLabel}</Button>
       </DialogTrigger>
       {open && (
       <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Email {candidateName}</DialogTitle>
+          <DialogTitle>{dialogTitle ?? `Email ${candidateName}`}</DialogTitle>
         </DialogHeader>
         <div className="space-y-4 text-sm">
           <p className="text-xs text-muted-foreground">To: {candidateEmail} · From: {userEmail}</p>

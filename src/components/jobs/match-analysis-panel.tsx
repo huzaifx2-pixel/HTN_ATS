@@ -1,9 +1,22 @@
 "use client";
 
 import { useState } from "react";
-import type { RecruiterMatchAnalysis } from "@/lib/matching/recruiter-engine/types";
+import type { RecruiterMatchAnalysis, SectionScoreDetail } from "@/lib/matching/recruiter-engine/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+
+function sectionCard(title: string, section: SectionScoreDetail | undefined) {
+  if (!section || section.maxScore <= 0) return null;
+  return (
+    <div className="rounded-md border p-2">
+      <div className="font-medium">{title}</div>
+      <div>
+        {section.score}/{section.maxScore} · {section.confidence}
+      </div>
+      <div className="text-muted-foreground mt-1">{section.reasoning}</div>
+    </div>
+  );
+}
 
 export function MatchAnalysisPanel({
   jobId,
@@ -15,6 +28,7 @@ export function MatchAnalysisPanel({
   candidateName: string;
 }) {
   const [analysis, setAnalysis] = useState<RecruiterMatchAnalysis | null>(null);
+  const [storedScore, setStoredScore] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -26,12 +40,18 @@ export function MatchAnalysisPanel({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Failed to load analysis");
       setAnalysis(data.analysis);
+      setStoredScore(typeof data.storedScore === "number" ? data.storedScore : null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load analysis");
     } finally {
       setLoading(false);
     }
   }
+
+  const booleanSection = analysis?.requirementBreakdown?.booleanSearch;
+  const locationSection = analysis?.sectionScores?.location ?? analysis?.requirementBreakdown?.location;
+  const scoreDiffers =
+    storedScore != null && analysis != null && Math.abs(storedScore - analysis.overallScore) >= 1;
 
   return (
     <div className="mt-2">
@@ -46,10 +66,23 @@ export function MatchAnalysisPanel({
               {candidateName} — {analysis.matchCategory} ({analysis.overallScore}/100)
             </CardTitle>
             <p className="text-xs text-muted-foreground">
+              Scored on Boolean search and location only.
+              {" · "}
               Recommendation: <span className="font-medium text-foreground">{analysis.recommendation}</span>
               {" · "}
               Confidence: {analysis.confidence}
+              {analysis.qualificationStatus && (
+                <>
+                  {" · "}
+                  Status: <span className="font-medium text-foreground">{analysis.qualificationStatus}</span>
+                </>
+              )}
             </p>
+            {scoreDiffers ? (
+              <p className="text-xs text-amber-700 mt-1">
+                List score {Math.round(storedScore)} is from a previous rematch. Use Rematch to refresh the list.
+              </p>
+            ) : null}
           </CardHeader>
           <CardContent className="space-y-3 text-xs">
             <p className="text-sm leading-relaxed">{analysis.summary}</p>
@@ -59,24 +92,17 @@ export function MatchAnalysisPanel({
                 <div className="font-medium">Boolean search</div>
                 <div className="text-muted-foreground mt-1">{analysis.booleanSearch.query}</div>
                 <div className="mt-1">
-                  {analysis.booleanSearch.passes ? "Passed" : "Failed"}
+                  {analysis.booleanSearch.passes ? "Matched" : "Did not match"}
                   {analysis.booleanSearch.matchedTerms.length > 0 && (
-                    <> · Matched: {analysis.booleanSearch.matchedTerms.join(", ")}</>
+                    <> · Matched terms: {analysis.booleanSearch.matchedTerms.join(", ")}</>
                   )}
                 </div>
               </div>
             )}
 
             <div className="grid gap-2 sm:grid-cols-2">
-              {Object.entries(analysis.sectionScores).map(([key, section]) => (
-                <div key={key} className="rounded-md border p-2">
-                  <div className="font-medium capitalize">{key.replace(/([A-Z])/g, " $1")}</div>
-                  <div>
-                    {section.score}/{section.maxScore} · {section.confidence}
-                  </div>
-                  <div className="text-muted-foreground mt-1">{section.reasoning}</div>
-                </div>
-              ))}
+              {sectionCard("Boolean search", booleanSection)}
+              {sectionCard("Location", locationSection)}
             </div>
 
             {analysis.strengths.length > 0 && (
@@ -90,25 +116,12 @@ export function MatchAnalysisPanel({
               </div>
             )}
 
-            {analysis.risks.length > 0 && (
+            {analysis.risks.length > 0 && analysis.risks[0] !== "No significant risks identified." && (
               <div>
                 <div className="font-medium mb-1">Risks</div>
                 <ul className="list-disc pl-4 space-y-1">
                   {analysis.risks.map((item) => (
                     <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {analysis.criticalMissingRequirements.length > 0 && (
-              <div>
-                <div className="font-medium mb-1">Critical Missing Requirements</div>
-                <ul className="list-disc pl-4 space-y-1">
-                  {analysis.criticalMissingRequirements.map((item) => (
-                    <li key={item.requirement}>
-                      {item.requirement} ({item.severity}) — {item.reasoning}
-                    </li>
                   ))}
                 </ul>
               </div>

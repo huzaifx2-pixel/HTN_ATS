@@ -62,7 +62,6 @@ export async function getGmailConnection(userId: string) {
 
 type GmailSendCredentials = { accessToken: string; email: string; expiresAt: number };
 
-const ACCESS_TOKEN_TTL_MS = 50 * 60 * 1000;
 const gmailTokenCache = new Map<string, GmailSendCredentials>();
 
 function cacheGmailToken(userId: string, accessToken: string, email: string, ttlMs: number): GmailSendCredentials {
@@ -73,7 +72,9 @@ function cacheGmailToken(userId: string, accessToken: string, email: string, ttl
 
 function isGmailUnauthorized(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
-  return /401|invalid credentials|unauthenticated|invalid_grant/i.test(message);
+  return /401|invalid credentials|unauthenticated|invalid_grant|session expired|reconnect gmail/i.test(
+    message
+  );
 }
 
 function isGmailRateLimited(error: unknown) {
@@ -90,22 +91,23 @@ async function getValidAccessToken(userId: string, forceRefresh = false): Promis
   const connection = await getGmailConnection(userId);
   if (!connection) throw new Error("Gmail not connected");
 
-  if (!forceRefresh) {
-    const age = Date.now() - connection.updatedAt.getTime();
-    if (age < ACCESS_TOKEN_TTL_MS) {
-      return cacheGmailToken(userId, connection.accessToken, connection.email, ACCESS_TOKEN_TTL_MS - age);
+  try {
+    const refreshed = await refreshAccessToken(connection.refreshToken);
+    if (refreshed.access_token !== connection.accessToken) {
+      await prisma.gmailConnection.update({
+        where: { userId },
+        data: { accessToken: refreshed.access_token },
+      });
     }
+    const ttl = Math.max((refreshed.expires_in ?? 3600) * 1000 - 60_000, 60_000);
+    return cacheGmailToken(userId, refreshed.access_token, connection.email, ttl);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/invalid_grant|unauthorized|401/i.test(message)) {
+      throw new Error("Gmail session expired. Disconnect and reconnect Gmail in Integrations.");
+    }
+    throw error;
   }
-
-  const refreshed = await refreshAccessToken(connection.refreshToken);
-  if (refreshed.access_token !== connection.accessToken) {
-    await prisma.gmailConnection.update({
-      where: { userId },
-      data: { accessToken: refreshed.access_token },
-    });
-  }
-  const ttl = Math.max((refreshed.expires_in ?? 3600) * 1000 - 60_000, 60_000);
-  return cacheGmailToken(userId, refreshed.access_token, connection.email, ttl);
 }
 
 export async function getGmailSendCredentials(userId: string) {

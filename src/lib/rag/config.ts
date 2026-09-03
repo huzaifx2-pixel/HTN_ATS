@@ -4,7 +4,7 @@ import { isVectorStoreReady } from "@/lib/rag/infrastructure";
 const DEFAULT_DIMENSIONS = 1536;
 const DEFAULT_TOP_K = 8;
 const DEFAULT_MIN_SIMILARITY = 0.25;
-const DEFAULT_SEMANTIC_WEIGHT = 0.15;
+const DEFAULT_SEMANTIC_WEIGHT = 0.08;
 
 function envFlag(name: string, fallback = true) {
   const raw = process.env[name];
@@ -35,7 +35,7 @@ export function getRagConfig() {
       Number.isFinite(minSimilarity) && minSimilarity >= 0 ? minSimilarity : DEFAULT_MIN_SIMILARITY,
     semanticMatchWeight:
       Number.isFinite(semanticMatchWeight) && semanticMatchWeight >= 0
-        ? Math.min(semanticMatchWeight, 0.5)
+        ? Math.min(semanticMatchWeight, 0.1)
         : DEFAULT_SEMANTIC_WEIGHT,
   };
 }

@@ -55,6 +55,6 @@ export function inferEventType(paths: string[]): RealtimeEventType {
   if (paths.some((p) => p.includes("/messages"))) return "message";
   if (paths.some((p) => p.includes("/candidates/inbox"))) return "inbox";
   if (paths.some((p) => p.includes("/candidates"))) return "candidates";
-  if (paths.some((p) => p.includes("/jobs"))) return "jobs";
+  if (paths.some((p) => p.includes("/jobs") || p.includes("/matching"))) return "jobs";
   return "sync";
 }

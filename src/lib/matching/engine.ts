@@ -14,11 +14,11 @@ export interface MatchWeights {
 }
 
 export const DEFAULT_WEIGHTS: MatchWeights = {
-  skills: 30,
-  experience: 10,
-  title: 10,
-  location: 2,
-  description: 15,
+  skills: 0,
+  experience: 0,
+  title: 0,
+  location: 50,
+  description: 0,
 };
 
 export interface MatchInput {

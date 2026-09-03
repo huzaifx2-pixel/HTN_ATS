@@ -21,16 +21,17 @@ import {
   findEvidenceSnippet,
   keywordCoverage,
   normalizeText,
-  parseCommaList,
   parseJsonStringArray,
   resumeContainsTerm,
   roundScore,
   scoreToCategory,
+  scoreToQualificationStatus,
   scoreToRecommendation,
   titleAlignmentScore,
   uniqueSorted,
 } from "@/lib/matching/recruiter-engine/text-utils";
 import { parseSkills } from "@/lib/utils";
+import { extractMatchingKeywords } from "@/lib/matching/text-similarity";
 import { evaluateLocationMatch } from "@/lib/matching/location-match";
 import {
   resolveCandidateSkillsForMatching,
@@ -41,24 +42,46 @@ import {
 } from "@/lib/matching/structured-candidate-data";
 import { runBooleanSearch } from "@/lib/matching/boolean-search";
 import { buildMatchingResumeCorpus } from "@/lib/matching/resume-corpus";
+import { attachBooleanSearch } from "@/lib/matching/boolean-search/analysis";
+import { parseJobRequirementTiers } from "@/lib/matching/recruiter-engine/requirements";
 import {
-  attachBooleanSearch,
-  buildBooleanFailureAnalysis,
-} from "@/lib/matching/boolean-search/analysis";
+  criticalEvidencePasses,
+  evidenceFromSkillStatus,
+  evidenceScoreRatio,
+} from "@/lib/matching/recruiter-engine/evidence";
 
+/** Matching uses Boolean search and location only. Other sections stay inactive. */
 const SECTION_MAX = {
-  jobTitle: 10,
-  requiredSkills: 30,
-  preferredSkills: 10,
-  experience: 10,
-  responsibilities: 15,
-  industry: 5,
-  education: 5,
-  certifications: 5,
-  tools: 5,
-  softSkills: 3,
-  location: 2,
+  criticalRequirements: 0,
+  jobTitle: 0,
+  requiredSkills: 0,
+  preferredSkills: 0,
+  experience: 0,
+  responsibilities: 0,
+  industry: 0,
+  education: 0,
+  certifications: 0,
+  tools: 0,
+  softSkills: 0,
+  location: 50,
+  booleanSearch: 50,
 } as const;
+
+function inactiveSection(reasoning: string): SectionScoreDetail {
+  return {
+    score: 0,
+    maxScore: 0,
+    confidence: "Low",
+    reasoning,
+    matched: [],
+    missing: [],
+  };
+}
+
+function ratioToSection(score: number, maxScore: number): number {
+  if (maxScore <= 0) return 0;
+  return score / maxScore;
+}
 
 export interface RecruiterAnalyzeInput {
   job: Job;
@@ -71,41 +94,6 @@ export interface RecruiterAnalyzeInput {
     certifications?: unknown;
     structured?: unknown;
   } | null;
-}
-
-type JobRequirements = {
-  skills?: string[];
-  preferredSkills?: string[];
-  certifications?: string[];
-  experienceYears?: number;
-  educationLevel?: string;
-  industry?: string;
-  tools?: string[];
-  responsibilities?: string[];
-};
-
-function parseRequirements(job: Job): JobRequirements {
-  const req = (job.requirements ?? {}) as JobRequirements;
-  return {
-    skills: uniqueSorted([
-      ...parseJsonStringArray(req.skills),
-      ...parseCommaList(job.requirementsText),
-    ]),
-    preferredSkills: uniqueSorted([
-      ...parseJsonStringArray(req.preferredSkills),
-      ...parseCommaList(job.preferredQualifications),
-    ]),
-    certifications: parseJsonStringArray(req.certifications),
-    experienceYears: req.experienceYears ?? job.experienceMin ?? undefined,
-    educationLevel: req.educationLevel,
-    industry: req.industry,
-    tools: parseJsonStringArray(req.tools),
-    responsibilities: uniqueSorted([
-      ...parseJsonStringArray(req.responsibilities),
-      ...extractBulletLines(job.responsibilities ?? ""),
-      ...extractBulletLines(job.description ?? "").slice(0, 8),
-    ]),
-  };
 }
 
 function buildResumeCorpus(
@@ -156,36 +144,53 @@ function buildResumeCorpus(
   };
 }
 
-function scoreRequiredSkills(
-  requiredSkills: string[],
+function evaluateSkills(
+  skills: string[],
   resumeText: string,
-  candidateSkills: string[]
+  candidateSkills: string[],
+  maxScore: number,
+  tier: "critical" | "core" | "preferred",
+  emptyReason: string,
+  overlappingKeywords: string[] = []
 ): { section: SectionScoreDetail; evaluations: SkillEvaluation[]; transferable: TransferableSkillEntry[] } {
-  if (requiredSkills.length === 0) {
+  if (skills.length === 0) {
     return {
-      section: {
-        score: SECTION_MAX.requiredSkills,
-        maxScore: SECTION_MAX.requiredSkills,
-        confidence: "Low",
-        reasoning: "No required skills were listed in the job description.",
-        matched: [],
-        missing: [],
-      },
+      section: inactiveSection(emptyReason),
       evaluations: [],
       transferable: [],
     };
   }
 
-  const evaluations: SkillEvaluation[] = requiredSkills.map((skill) => {
+  const evaluations: SkillEvaluation[] = skills.map((skill) => {
     const match = classifySkillMatch(resumeText, skill, candidateSkills);
+    let status = match.status;
+    let evidenceText = match.evidence;
+    let reasoning = match.reasoning;
+    if (
+      tier === "core" &&
+      status === "Missing" &&
+      overlappingKeywords.some((keyword) => {
+        const skillNorm = normalizeText(skill);
+        const keyNorm = normalizeText(keyword);
+        return keyNorm.length >= 3 && (skillNorm.includes(keyNorm) || keyNorm.includes(skillNorm));
+      })
+    ) {
+      status = "Transferable";
+      evidenceText = overlappingKeywords.slice(0, 3).join(", ");
+      reasoning = `No direct "${skill}" evidence, but related job/resume terms overlap (${evidenceText}).`;
+    }
+    const evidence = evidenceFromSkillStatus(status);
     return {
       skill,
-      required: true,
-      found: match.status !== "Missing",
+      required: tier !== "preferred",
+      found: status !== "Missing",
       yearsUsed: match.evidence === "Not Found" ? "Not Found" : undefined,
-      evidence: match.evidence,
-      reasoning: match.reasoning,
-      status: match.status,
+      evidence: evidenceText,
+      reasoning,
+      status,
+      tier,
+      evidenceLevel: evidence.level,
+      evidenceKind: evidence.kind,
     };
   });
 
@@ -197,26 +202,25 @@ function scoreRequiredSkills(
       reasoning: item.reasoning,
     }));
 
-  const pointsPerSkill = SECTION_MAX.requiredSkills / requiredSkills.length;
-  const score = evaluations.reduce((sum, item) => {
-    if (item.status === "Exact Match" || item.status === "Equivalent Match") return sum + pointsPerSkill;
-    if (item.status === "Semantic Match") return sum + pointsPerSkill * 0.85;
-    if (item.status === "Transferable") return sum + pointsPerSkill * 0.6;
-    return sum;
-  }, 0);
+  const pointsPerSkill = maxScore / skills.length;
+  const score = evaluations.reduce(
+    (sum, item) => sum + pointsPerSkill * evidenceScoreRatio(item.evidenceLevel ?? 0),
+    0
+  );
 
   const matched = evaluations.filter((item) => item.found).map((item) => item.skill);
   const missing = evaluations.filter((item) => !item.found).map((item) => item.skill);
+  const label = tier === "critical" ? "Critical" : tier === "core" ? "Core" : "Preferred";
 
   return {
     section: {
       score: roundScore(score),
-      maxScore: SECTION_MAX.requiredSkills,
-      confidence: confidenceFromEvidence(matched.length ? matched[0] : "Not Found", score / SECTION_MAX.requiredSkills),
+      maxScore,
+      confidence: confidenceFromEvidence(matched[0] ?? "Not Found", ratioToSection(score, maxScore)),
       reasoning:
         missing.length === 0
-          ? "All required skills are supported by explicit or semantic resume evidence."
-          : `Required skill coverage is partial. Missing: ${missing.slice(0, 5).join(", ")}.`,
+          ? `All ${label.toLowerCase()} skills are supported by resume evidence.`
+          : `${label} skill coverage is partial. Missing: ${missing.slice(0, 5).join(", ")}.`,
       matched,
       missing,
       details: { evaluations },
@@ -228,14 +232,7 @@ function scoreRequiredSkills(
 
 function scorePreferredSkills(required: string[], resumeText: string, candidateSkills: string[]) {
   if (required.length === 0) {
-    return {
-      score: SECTION_MAX.preferredSkills,
-      maxScore: SECTION_MAX.preferredSkills,
-      confidence: "Low" as const,
-      reasoning: "No preferred skills were listed in the job description.",
-      matched: [] as string[],
-      missing: [] as string[],
-    };
+    return inactiveSection("No preferred skills were listed in the job description.");
   }
 
   const coverage = keywordCoverage(required, resumeText, candidateSkills);
@@ -267,16 +264,7 @@ function scoreExperience(
     null;
 
   if (!requiredYears) {
-    return {
-      score: actualYears ? SECTION_MAX.experience * 0.7 : SECTION_MAX.experience * 0.4,
-      maxScore: SECTION_MAX.experience,
-      confidence: "Low" as const,
-      reasoning: actualYears
-        ? `No explicit experience requirement listed. Candidate shows ${actualYears} years of experience.`
-        : "No explicit experience requirement or years of experience evidence was found.",
-      matched: actualYears ? [`${actualYears} years`] : [],
-      missing: [] as string[],
-    };
+    return inactiveSection("No explicit experience requirement listed in the job description.");
   }
 
   if (actualYears == null) {
@@ -308,12 +296,7 @@ function scoreExperience(
 function scoreResponsibilities(responsibilities: string[], resumeBullets: string[], resumeText: string) {
   if (responsibilities.length === 0) {
     return {
-      score: SECTION_MAX.responsibilities * 0.5,
-      maxScore: SECTION_MAX.responsibilities,
-      confidence: "Low" as const,
-      reasoning: "No explicit responsibilities were extracted from the job description.",
-      matched: [] as string[],
-      missing: [] as string[],
+      ...inactiveSection("No explicit responsibilities were extracted from the job description."),
       matchedItems: [] as string[],
       missingItems: [] as string[],
     };
@@ -354,14 +337,7 @@ function scoreIndustry(industry: string | undefined, jobText: string, resumeText
     INDUSTRY_KEYWORDS.find((keyword) => normalizeText(jobText).includes(keyword)) ??
     "";
   if (!targetIndustry) {
-    return {
-      score: SECTION_MAX.industry * 0.5,
-      maxScore: SECTION_MAX.industry,
-      confidence: "Low" as const,
-      reasoning: "No target industry was specified in the job description.",
-      matched: [],
-      missing: [],
-    };
+    return inactiveSection("No target industry was specified in the job description.");
   }
 
   const found = resumeContainsTerm(resumeText, targetIndustry);
@@ -538,159 +514,333 @@ function buildSummary(analysis: Omit<RecruiterMatchAnalysis, "summary">) {
     `Primary strengths: ${strengths}.`,
     `Key risks: ${risks}.`,
     missing,
-    `Required skill coverage: ${analysis.atsKeywords.required.coverage}%. Responsibility alignment and experience were evaluated using evidence-only recruiter rules without inferred qualifications.`,
+    `Boolean coverage: ${analysis.atsKeywords.required.coverage}%. Location alignment: ${analysis.atsKeywords.preferred.coverage}%. Skills, tools, and responsibilities are not used.`,
   ].join(" ");
+}
+
+function authorizationClearlyFails(candidate: Candidate, resumeText: string) {
+  const text = `${candidate.workAuthorization ?? ""} ${resumeText}`;
+  return /\b(not authorized|unauthorized|no work authorization|ineligible to work)\b/i.test(text);
+}
+
+function evaluateCriticalRequirements(
+  requirements: ReturnType<typeof parseJobRequirementTiers>,
+  resumeText: string,
+  candidate: Candidate,
+  candidateSkills: string[],
+  parsedCertifications: string[],
+  experience: SectionScoreDetail
+): { section: SectionScoreDetail; evaluations: SkillEvaluation[]; missing: CriticalMissingRequirement[] } {
+  const items = requirements.critical;
+  if (items.length === 0 && !requirements.experienceIsCritical) {
+    return {
+      section: inactiveSection("No critical must-have requirements were identified in the job description."),
+      evaluations: [],
+      missing: [],
+    };
+  }
+
+  const evaluations: SkillEvaluation[] = [];
+  const missing: CriticalMissingRequirement[] = [];
+
+  for (const item of items) {
+    if (item.kind === "authorization") {
+      const fails = authorizationClearlyFails(candidate, resumeText);
+      const level = fails ? 0 : 3;
+      evaluations.push({
+        skill: item.text,
+        required: true,
+        found: !fails,
+        evidence: fails ? "Not Found" : (candidate.workAuthorization ?? "No disqualifying authorization evidence"),
+        reasoning: fails
+          ? "Resume or profile indicates the candidate is not authorized to work."
+          : "No disqualifying work-authorization evidence was found.",
+        status: fails ? "Missing" : "Exact Match",
+        tier: "critical",
+        evidenceLevel: level as 0 | 3,
+        evidenceKind: fails ? "MISSING" : "EXACT",
+      });
+      if (fails) {
+        missing.push({
+          requirement: item.text,
+          severity: "Critical",
+          reasoning: "Work authorization appears to fail a mandatory requirement.",
+        });
+      }
+      continue;
+    }
+
+    if (item.kind === "certification") {
+      const found =
+        parsedCertifications.some(
+          (cert) =>
+            normalizeText(cert).includes(normalizeText(item.text)) ||
+            normalizeText(item.text).includes(normalizeText(cert))
+        ) || resumeContainsTerm(resumeText, item.text);
+      const status = found ? ("Exact Match" as const) : ("Missing" as const);
+      const evidence = evidenceFromSkillStatus(status);
+      evaluations.push({
+        skill: item.text,
+        required: true,
+        found,
+        evidence: found ? findEvidenceSnippet(resumeText, item.text) : "Not Found",
+        reasoning: found
+          ? `Required certification "${item.text}" is evidenced in the resume.`
+          : `Required certification "${item.text}" was not found.`,
+        status,
+        tier: "critical",
+        evidenceLevel: evidence.level,
+        evidenceKind: evidence.kind,
+      });
+      if (!criticalEvidencePasses(evidence.level)) {
+        missing.push({
+          requirement: item.text,
+          severity: "Critical",
+          reasoning: `Mandatory certification "${item.text}" is missing.`,
+        });
+      }
+      continue;
+    }
+
+    if (item.kind === "other") {
+      const exactListed = candidateSkills.some((skill) => normalizeText(skill) === normalizeText(item.text));
+      const found = exactListed || resumeContainsTerm(resumeText, item.text);
+      const status = found ? ("Exact Match" as const) : ("Missing" as const);
+      const evidence = evidenceFromSkillStatus(status);
+      evaluations.push({
+        skill: item.text,
+        required: true,
+        found,
+        evidence: found ? findEvidenceSnippet(resumeText, item.text) : "Not Found",
+        reasoning: found
+          ? `Mandatory requirement "${item.text}" is evidenced in the resume.`
+          : `Mandatory requirement "${item.text}" was not found.`,
+        status,
+        tier: "critical",
+        evidenceLevel: evidence.level,
+        evidenceKind: evidence.kind,
+      });
+      if (!criticalEvidencePasses(evidence.level)) {
+        missing.push({
+          requirement: item.text,
+          severity: "Critical",
+          reasoning: `Mandatory requirement "${item.text}" is missing.`,
+        });
+      }
+      continue;
+    }
+
+    const match = classifySkillMatch(resumeText, item.text, candidateSkills);
+    const evidence = evidenceFromSkillStatus(match.status);
+    evaluations.push({
+      skill: item.text,
+      required: true,
+      found: match.status !== "Missing",
+      evidence: match.evidence,
+      reasoning: match.reasoning,
+      status: match.status,
+      tier: "critical",
+      evidenceLevel: evidence.level,
+      evidenceKind: evidence.kind,
+    });
+    if (!criticalEvidencePasses(evidence.level)) {
+      missing.push({
+        requirement: item.text,
+        severity: "Critical",
+        reasoning: match.reasoning,
+      });
+    }
+  }
+
+  if (requirements.experienceIsCritical && requirements.experienceYears) {
+    const actual = experience.matched?.[0];
+    const hasYears = Boolean(actual) && experience.score > 0;
+    if (!hasYears) {
+      missing.push({
+        requirement: `${requirements.experienceYears}+ years experience`,
+        severity: "Critical",
+        reasoning: experience.reasoning,
+      });
+    }
+  }
+
+  const scoredItems = evaluations.length;
+  const maxScore = items.length > 0 ? SECTION_MAX.criticalRequirements : 0;
+  const score =
+    scoredItems === 0
+      ? 0
+      : evaluations.reduce(
+          (sum, item) => sum + (maxScore / scoredItems) * evidenceScoreRatio(item.evidenceLevel ?? 0),
+          0
+        );
+
+  return {
+    section:
+      maxScore === 0
+        ? inactiveSection("No critical must-have requirements were identified in the job description.")
+        : {
+            score: roundScore(score),
+            maxScore,
+            confidence: missing.length === 0 ? "High" : "Low",
+            reasoning:
+              missing.length === 0
+                ? "All critical must-have requirements are supported by demonstrated evidence."
+                : `Missing critical requirements: ${missing.map((item) => item.requirement).join(", ")}.`,
+            matched: evaluations.filter((item) => criticalEvidencePasses(item.evidenceLevel ?? 0)).map((item) => item.skill),
+            missing: missing.map((item) => item.requirement),
+            details: { evaluations },
+          },
+    evaluations,
+    missing,
+  };
+}
+
+function normalizedOverallScore(sections: SectionScoreDetail[]) {
+  const possible = sections.reduce((sum, section) => sum + section.maxScore, 0);
+  const earned = sections.reduce((sum, section) => sum + section.score, 0);
+  if (possible <= 0) return 0;
+  return roundScore((earned / possible) * 100);
+}
+
+function sectionPercent(section: SectionScoreDetail) {
+  if (section.maxScore <= 0) return 0;
+  return roundScore((section.score / section.maxScore) * 100);
 }
 
 export function analyzeResumeAgainstJob(input: RecruiterAnalyzeInput): RecruiterMatchAnalysis {
   const { job, candidate, parsedResume } = input;
   const resumeText = input.resumeText ?? candidate.summary ?? "";
   const booleanQuery = job.booleanSearch?.trim();
-  let booleanPass: { query: string; matchedTerms: string[] } | null = null;
+  let booleanAnalysis: RecruiterMatchAnalysis["booleanSearch"];
 
   if (booleanQuery) {
     const corpus = buildMatchingResumeCorpus(candidate, { resumeText, parsedResume });
     const booleanResult = runBooleanSearch(booleanQuery, corpus);
-
     if (!booleanResult.ok) {
-      return buildBooleanFailureAnalysis({
+      booleanAnalysis = {
         query: booleanQuery,
         passes: false,
         matchedTerms: [],
         reason: `Invalid job boolean search: ${booleanResult.error}`,
-      });
-    } else if (!booleanResult.passes) {
-      return buildBooleanFailureAnalysis({
-        query: booleanQuery,
-        passes: false,
-        matchedTerms: booleanResult.matchedTerms,
-        reason: "Does not match the job boolean search query.",
-      });
+      };
     } else {
-      booleanPass = { query: booleanQuery, matchedTerms: booleanResult.matchedTerms };
+      booleanAnalysis = {
+        query: booleanQuery,
+        passes: booleanResult.passes,
+        matchedTerms: booleanResult.matchedTerms,
+        reason: booleanResult.passes ? undefined : "Does not match the job boolean search query.",
+      };
     }
   }
 
-  const requirements = parseRequirements(job);
-  const corpus = buildResumeCorpus(candidate, resumeText, parsedResume);
-  const jobText = [job.title, job.description, job.responsibilities, job.requirementsText]
-    .filter(Boolean)
-    .join("\n");
-
-  const titleEval = titleAlignmentScore(job.title, corpus.candidateTitles);
-  const jobTitle: SectionScoreDetail = {
-    score: roundScore(titleEval.score * SECTION_MAX.jobTitle),
-    maxScore: SECTION_MAX.jobTitle,
-    confidence: confidenceFromEvidence(titleEval.matched[0] ?? "Not Found", titleEval.score),
-    reasoning: titleEval.reasoning,
-    matched: titleEval.matched,
-    missing: titleEval.matched.length ? [] : [job.title],
-  };
-
-  const required = scoreRequiredSkills(requirements.skills ?? [], resumeText, corpus.candidateSkills);
-  const preferredSkills = scorePreferredSkills(requirements.preferredSkills ?? [], resumeText, corpus.candidateSkills);
-  const experience = scoreExperience(requirements.experienceYears, resumeText, candidate, parsedResume);
-  const responsibilities = scoreResponsibilities(requirements.responsibilities ?? [], corpus.resumeBullets, resumeText);
-  const industry = scoreIndustry(requirements.industry, jobText, resumeText);
-  const education = scoreEducation(requirements.educationLevel, corpus.parsedEducation);
-  const certifications = scoreCertifications(
-    requirements.certifications ?? [],
-    corpus.parsedCertifications,
-    resumeText
-  );
-  const tools = scoreTools(jobText, requirements.tools ?? [], resumeText, corpus.candidateSkills);
-  const softSkills = scoreSoftSkills(resumeText);
+  const unused = inactiveSection("Not used — matching considers Boolean search and location only.");
   const location = scoreLocation(job, candidate, resumeText);
 
-  const sectionScores = {
-    jobTitle,
-    requiredSkills: required.section,
-    preferredSkills,
-    experience,
-    responsibilities,
-    industry,
-    education,
-    certifications,
-    tools,
-    softSkills,
+  const booleanInvalid = Boolean(booleanAnalysis?.reason?.toLowerCase().includes("invalid"));
+  const booleanActive = Boolean(booleanQuery && booleanAnalysis && !booleanInvalid);
+  const booleanFails = booleanActive && booleanAnalysis?.passes !== true;
+  const booleanSection: SectionScoreDetail = booleanActive
+    ? {
+        score: booleanAnalysis!.passes ? SECTION_MAX.booleanSearch : 0,
+        maxScore: SECTION_MAX.booleanSearch,
+        confidence: "High",
+        reasoning: booleanAnalysis!.passes
+          ? booleanAnalysis!.matchedTerms.length > 0
+            ? `Matches the job Boolean search: ${booleanAnalysis!.matchedTerms.slice(0, 8).join(", ")}.`
+            : "Matches the job Boolean search."
+          : (booleanAnalysis!.reason ?? "Does not match the job Boolean search query."),
+        matched: booleanAnalysis!.matchedTerms,
+        missing: booleanAnalysis!.passes ? [] : ["Boolean search"],
+      }
+    : inactiveSection(
+        booleanInvalid
+          ? (booleanAnalysis?.reason ?? "Boolean search is invalid and was not used as a filter.")
+          : "No Boolean search on this job.",
+      );
+
+  const notQualified = booleanFails;
+  const overallScore = notQualified ? 0 : normalizedOverallScore([booleanSection, location]);
+  const qualificationStatus = scoreToQualificationStatus(overallScore, notQualified);
+  const matchCategory = notQualified ? ("Not Qualified" as const) : scoreToCategory(overallScore);
+  const recommendation = notQualified ? ("Reject" as const) : scoreToRecommendation(overallScore);
+
+  const requirementBreakdown = {
+    critical: unused,
+    coreSkills: unused,
+    preferredSkills: unused,
+    responsibilities: unused,
+    experience: unused,
+    jobTitle: unused,
+    industry: unused,
     location,
+    booleanSearch: booleanSection,
   };
 
-  const overallScore = roundScore(
-    Object.values(sectionScores).reduce((sum, section) => sum + section.score, 0)
-  );
-
-  const atsRequired = keywordCoverage(requirements.skills ?? [], resumeText, corpus.candidateSkills);
-  const atsPreferred = keywordCoverage(requirements.preferredSkills ?? [], resumeText, corpus.candidateSkills);
-
-  const criticalMissingRequirements: CriticalMissingRequirement[] = required.evaluations
-    .filter((item) => item.status === "Missing")
-    .map((item) => ({
-      requirement: item.skill,
-      severity: "Critical" as const,
-      reasoning: item.reasoning,
-    }));
+  const sectionScores = {
+    jobTitle: unused,
+    requiredSkills: unused,
+    preferredSkills: unused,
+    experience: unused,
+    responsibilities: unused,
+    industry: unused,
+    education: unused,
+    certifications: unused,
+    tools: unused,
+    softSkills: unused,
+    location,
+    criticalRequirements: unused,
+  };
 
   const strengths: string[] = [];
-  if (experience.score >= SECTION_MAX.experience * 0.9) strengths.push("Meets or exceeds experience requirement");
-  if (required.section.score >= SECTION_MAX.requiredSkills * 0.75) strengths.push("Strong required technical stack alignment");
-  if (industry.score >= SECTION_MAX.industry) strengths.push("Relevant industry background");
-  if (softSkills.matched.includes("Leadership") || softSkills.matched.includes("Mentoring")) {
-    strengths.push("Leadership or mentoring experience evidenced in resume");
+  if (booleanSection.maxScore > 0 && booleanSection.score >= booleanSection.maxScore) {
+    strengths.push("Matches the job Boolean search");
   }
-  if (responsibilities.score >= SECTION_MAX.responsibilities * 0.7) strengths.push("High responsibility alignment");
-  if (education.score >= SECTION_MAX.education * 0.8) strengths.push("Education supports role requirements");
-  if (tools.score >= SECTION_MAX.tools * 0.7) strengths.push("Strong tools and technologies coverage");
+  if (location.maxScore > 0 && location.score >= location.maxScore * 0.75) {
+    strengths.push("Location aligns with the job");
+  }
 
   const risks: string[] = [];
-  if (criticalMissingRequirements.length > 0) {
-    risks.push(`Missing required skills: ${criticalMissingRequirements.slice(0, 3).map((item) => item.requirement).join(", ")}`);
+  if (booleanFails) {
+    risks.push("Does not match the job Boolean search.");
   }
-  if (certifications.missing.length > 0) risks.push(`Missing certifications: ${certifications.missing.join(", ")}`);
-  if (experience.score < SECTION_MAX.experience * 0.5 && requirements.experienceYears) {
-    risks.push("Experience below stated requirement");
-  }
-  if (industry.score === 0 && requirements.industry) risks.push("Different or unverified industry background");
-  if (location.score < SECTION_MAX.location * 0.5 && (job.location || job.country)) {
-    risks.push("Location or work authorization may not match the role");
+  if (location.maxScore > 0 && location.score < location.maxScore * 0.6) {
+    risks.push(location.reasoning);
   }
   if (risks.length === 0) risks.push("No significant risks identified.");
 
   const detailedReasoning = buildDetailedReasoning([
-    { criterion: "Job Title Alignment", section: jobTitle },
-    { criterion: "Required Technical Skills", section: required.section },
-    { criterion: "Preferred Skills", section: preferredSkills },
-    { criterion: "Years of Experience", section: experience },
-    { criterion: "Responsibilities Alignment", section: responsibilities },
-    { criterion: "Industry Experience", section: industry },
-    { criterion: "Education", section: education },
-    { criterion: "Certifications", section: certifications },
-    { criterion: "Tools & Technologies", section: tools },
-    { criterion: "Soft Skills", section: softSkills },
-    { criterion: "Location / Work Authorization", section: location },
+    { criterion: "Boolean Search", section: booleanSection },
+    { criterion: "Location", section: location },
   ]);
 
   const baseAnalysis = {
     overallScore,
-    matchCategory: scoreToCategory(overallScore),
-    recommendation: scoreToRecommendation(overallScore),
-    confidence: confidenceFromEvidence(
-      required.section.matched?.[0] ?? "Not Found",
-      overallScore / 100
-    ),
+    matchCategory,
+    recommendation,
+    confidence: notQualified
+      ? ("High" as const)
+      : confidenceFromEvidence(location.matched?.[0] ?? booleanSection.matched?.[0] ?? "Not Found", overallScore / 100),
+    engineVersion: "v2" as const,
+    qualificationStatus,
     sectionScores,
+    requirementBreakdown,
     strengths: uniqueSorted(strengths),
     risks,
-    criticalMissingRequirements,
+    criticalMissingRequirements: [],
     atsKeywords: {
-      required: atsRequired,
-      preferred: atsPreferred,
+      required: {
+        matched: booleanSection.matched ?? [],
+        missing: booleanSection.missing ?? [],
+        coverage: booleanSection.maxScore > 0 ? roundScore((booleanSection.score / booleanSection.maxScore) * 100) : 0,
+      },
+      preferred: { matched: location.matched ?? [], missing: location.missing ?? [], coverage: sectionPercent(location) },
     },
-    transferableSkills: required.transferable,
-    matchedResponsibilities: responsibilities.matchedItems ?? responsibilities.matched ?? [],
-    missingResponsibilities: responsibilities.missingItems ?? responsibilities.missing ?? [],
-    skillEvaluations: required.evaluations,
+    transferableSkills: [],
+    matchedResponsibilities: [],
+    missingResponsibilities: [],
+    skillEvaluations: [],
     detailedReasoning,
+    overlappingKeywords: [],
   };
 
   const analysis: RecruiterMatchAnalysis = {
@@ -698,25 +848,31 @@ export function analyzeResumeAgainstJob(input: RecruiterAnalyzeInput): Recruiter
     summary: buildSummary(baseAnalysis),
   };
 
-  if (booleanPass) {
-    return attachBooleanSearch(analysis, {
-      query: booleanPass.query,
-      passes: true,
-      matchedTerms: booleanPass.matchedTerms,
-    });
+  if (booleanAnalysis) {
+    return attachBooleanSearch(analysis, booleanAnalysis);
   }
 
   return analysis;
 }
 
 export function analysisToLegacyMatchResult(analysis: RecruiterMatchAnalysis) {
+  const booleanSection = analysis.requirementBreakdown?.booleanSearch;
+  const booleanPercent =
+    booleanSection && booleanSection.maxScore > 0
+      ? sectionPercent(booleanSection)
+      : analysis.booleanSearch?.passes
+        ? 100
+        : 0;
   return {
     score: analysis.overallScore,
-    skillsMatch: roundScore((analysis.sectionScores.requiredSkills.score / SECTION_MAX.requiredSkills) * 100),
-    experienceMatch: roundScore((analysis.sectionScores.experience.score / SECTION_MAX.experience) * 100),
-    descriptionMatch: roundScore((analysis.sectionScores.responsibilities.score / SECTION_MAX.responsibilities) * 100),
-    missingSkills: analysis.atsKeywords.required.missing,
-    matchedKeywords: analysis.atsKeywords.required.matched,
+    skillsMatch: booleanPercent,
+    experienceMatch: 0,
+    descriptionMatch: sectionPercent(analysis.sectionScores.location),
+    missingSkills: analysis.sectionScores.location.missing ?? [],
+    matchedKeywords: [
+      ...(analysis.booleanSearch?.matchedTerms ?? []),
+      ...(analysis.sectionScores.location.matched ?? []),
+    ],
     reason: analysis.summary.slice(0, 500),
     analysis,
   };

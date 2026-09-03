@@ -82,6 +82,7 @@ export function orgCacheKeys(organizationId: string) {
     `job-missing-boolean:${organizationId}`,
     `org-settings:${organizationId}`,
     `search-facets:${organizationId}`,
+    `pending-match-email-count:${organizationId}`,
   ];
 }
 

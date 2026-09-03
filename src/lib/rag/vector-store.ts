@@ -179,6 +179,47 @@ export async function queryResumeSimilarities(input: {
   return scores;
 }
 
+/** Discover resume source IDs similar to a job embedding, without a candidate-id prefilter. */
+export async function querySimilarResumesForJob(input: {
+  organizationId: string;
+  jobId: string;
+  limit?: number;
+  minSimilarity?: number;
+}): Promise<Map<string, number>> {
+  const scores = new Map<string, number>();
+  const limit = Math.min(Math.max(input.limit ?? 300, 1), 800);
+  const minSimilarity = input.minSimilarity ?? getRagConfig().minSimilarity;
+
+  try {
+    const rows = await prisma.$queryRawUnsafe<Array<{ sourceId: string; similarity: number }>>(
+      `SELECT c."sourceId", MAX(1 - (c.embedding <=> j.embedding))::float AS similarity
+       FROM "EmbeddingChunk" c
+       INNER JOIN "EmbeddingChunk" j
+         ON j."organizationId" = c."organizationId"
+        AND j."sourceType" = 'job'
+        AND j."sourceId" = $2
+        AND j."chunkIndex" = 0
+       WHERE c."organizationId" = $1
+         AND c."sourceType" = 'resume'
+         AND (1 - (c.embedding <=> j.embedding)) >= $3
+       GROUP BY c."sourceId"
+       ORDER BY MAX(c.embedding <=> j.embedding)
+       LIMIT $4`,
+      input.organizationId,
+      input.jobId,
+      minSimilarity,
+      limit
+    );
+    for (const row of rows) {
+      scores.set(row.sourceId, row.similarity);
+    }
+  } catch (error) {
+    console.error("[rag] similar resume discovery failed:", error instanceof Error ? error.message : error);
+  }
+
+  return scores;
+}
+
 export async function countIndexedChunks(organizationId: string) {
   try {
     const rows = await prisma.$queryRawUnsafe<Array<{ count: bigint }>>(

@@ -1,8 +1,10 @@
 import { randomUUID } from "crypto";
 import { prisma } from "@/lib/db";
+import { isMatchingKilled, MATCHING_PARKED_UNTIL } from "@/lib/matching/kill-switch";
 import { getRedis, redisUrl } from "@/lib/queue/redis";
 
 export const MATCH_QUEUE_NAME = "headsbase-match";
+export const FORCE_REMATCH_SOURCE = "force-rematch";
 
 export type MatchJobPayload = {
   organizationId: string;
@@ -18,6 +20,7 @@ async function existingPending(payload: MatchJobPayload) {
       organizationId: payload.organizationId,
       type: payload.type,
       status: { in: ["PENDING", "PROCESSING"] },
+      runAfter: { lt: MATCHING_PARKED_UNTIL },
       ...(payload.candidateId ? { candidateId: payload.candidateId } : {}),
       ...(payload.jobId ? { jobId: payload.jobId } : {}),
     },
@@ -26,8 +29,20 @@ async function existingPending(payload: MatchJobPayload) {
 }
 
 export async function enqueueMatchJob(payload: MatchJobPayload) {
+  if (await isMatchingKilled(payload.organizationId)) {
+    return { id: "matching-killed", deduped: true, skipped: true as const };
+  }
+
   const pending = await existingPending(payload);
-  if (pending) return { id: pending.id, deduped: true };
+  if (pending) {
+    if (payload.source === FORCE_REMATCH_SOURCE) {
+      await prisma.matchWorkItem.update({
+        where: { id: pending.id },
+        data: { source: FORCE_REMATCH_SOURCE },
+      });
+    }
+    return { id: pending.id, deduped: true };
+  }
 
   const item = await prisma.matchWorkItem.create({
     data: {
@@ -69,8 +84,18 @@ export async function enqueueCandidateMatch(organizationId: string, candidateId:
   return enqueueMatchJob({ organizationId, type: "CANDIDATE", candidateId, source });
 }
 
-export async function enqueueJobMatch(organizationId: string, jobId: string, source: string) {
-  return enqueueMatchJob({ organizationId, type: "JOB", jobId, source });
+export async function enqueueJobMatch(
+  organizationId: string,
+  jobId: string,
+  source: string,
+  options?: { force?: boolean },
+) {
+  return enqueueMatchJob({
+    organizationId,
+    type: "JOB",
+    jobId,
+    source: options?.force ? FORCE_REMATCH_SOURCE : source,
+  });
 }
 
 export function matchingQueueConfigured() {

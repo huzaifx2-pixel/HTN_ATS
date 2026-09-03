@@ -5,6 +5,7 @@ import { MatchScoreBadge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { MatchAnalysisPanel } from "@/components/jobs/match-analysis-panel";
+import { MatchWhySummary, type MatchWhyData } from "@/components/jobs/match-why-summary";
 import { MatchCandidateEmail } from "@/components/jobs/match-candidate-email";
 import { addCandidateToJobAction } from "@/app/actions";
 
@@ -16,6 +17,9 @@ type MatchRow = {
   experienceMatch: number;
   descriptionMatch: number;
   semanticScore?: number | null;
+  matchStatus?: string | null;
+  confidence?: string | null;
+  requirementBreakdown?: MatchWhyData["requirementBreakdown"];
   reason: string | null;
   candidate: {
     firstName: string;
@@ -56,7 +60,13 @@ export function ReferralMatchesPanel({
                   {m.candidate.firstName} {m.candidate.lastName}
                 </Link>
                 <div className="text-xs text-muted-foreground">{m.candidate.currentRole}</div>
-                <div className="text-xs text-muted-foreground mt-1">{m.reason}</div>
+                <MatchWhySummary
+                  data={{
+                    matchStatus: m.matchStatus,
+                    confidence: m.confidence,
+                    requirementBreakdown: m.requirementBreakdown ?? null,
+                  }}
+                />
                 <MatchAnalysisPanel
                   jobId={jobId}
                   candidateId={m.candidateId}
@@ -64,7 +74,7 @@ export function ReferralMatchesPanel({
                 />
               </div>
               <div className="text-right shrink-0 flex flex-col items-end gap-2">
-                <MatchScoreBadge score={m.score} />
+                <MatchScoreBadge score={m.score} status={m.matchStatus} />
                 <div className="flex gap-2">
                   <MatchCandidateEmail
                     {...emailProps}

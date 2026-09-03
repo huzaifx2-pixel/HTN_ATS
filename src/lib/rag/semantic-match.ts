@@ -2,6 +2,9 @@ import { getRagConfig, isRagReady } from "@/lib/rag/config";
 import { queryResumeSimilarities } from "@/lib/rag/vector-store";
 
 export function blendRecruiterAndSemantic(recruiterScore: number, semanticSimilarity: number | undefined) {
+  if (recruiterScore <= 0) {
+    return { score: 0, semanticScore: 0 };
+  }
   const weight = getRagConfig().semanticMatchWeight;
   if (semanticSimilarity == null || Number.isNaN(semanticSimilarity)) {
     return { score: recruiterScore, semanticScore: 0 };

@@ -808,25 +808,30 @@ model LinkedInJobMatch {
 }
 
 model JobMatch {
-  id              String    @id @default(cuid())
-  jobId           String
-  job             Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  candidateId     String
-  candidate       Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
-  score           Float     @default(0)
-  skillsMatch     Float     @default(0)
-  experienceMatch Float     @default(0)
-  descriptionMatch Float    @default(0)
-  missingSkills   Json?
-  reason          String?
-  analysis        Json?
-  semanticScore   Float     @default(0)
-  computedAt      DateTime  @default(now())
+  id                     String    @id @default(cuid())
+  jobId                  String
+  job                    Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  candidateId            String
+  candidate              Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  score                  Float     @default(0)
+  skillsMatch            Float     @default(0)
+  experienceMatch        Float     @default(0)
+  descriptionMatch       Float     @default(0)
+  missingSkills          Json?
+  reason                 String?
+  analysis               Json?
+  semanticScore          Float     @default(0)
+  matchStatus            String?
+  confidence             String?
+  requirementBreakdown   Json?
+  retrievalScore         Float     @default(0)
+  computedAt             DateTime  @default(now())
 
   @@unique([jobId, candidateId])
   @@index([jobId, score(sort: Desc)])
   @@index([candidateId])
   @@index([jobId, computedAt])
+  @@index([jobId, matchStatus])
 }
 
 model Skill {

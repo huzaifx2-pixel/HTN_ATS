@@ -22,15 +22,16 @@ export async function searchJobIds(organizationId: string, query: string, limit:
   }
 
   const like = `%${trimmed}%`;
-  const prefix = `${trimmed}%`;
   const rows = await prisma.$queryRaw<Array<{ id: string }>>`
     SELECT j.id
     FROM "Job" j
+    INNER JOIN "Client" cl ON cl.id = j."clientId"
     WHERE j."organizationId" = ${organizationId}
       AND (
-        j.title ILIKE ${prefix}
+        j.title ILIKE ${like}
         OR j."jobCode" ILIKE ${like}
-        OR j.location ILIKE ${like}
+        OR COALESCE(j.location, '') ILIKE ${like}
+        OR cl.name ILIKE ${like}
       )
     ORDER BY j."updatedAt" DESC
     LIMIT ${limit}

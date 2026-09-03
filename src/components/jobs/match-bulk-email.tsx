@@ -114,7 +114,7 @@ export function MatchBulkEmail({
   const previewIsHtml = isHtmlEmailBody(previewBody);
 
   function insertMergeField(field: string) {
-    if (activeFieldRef.current === "subject" && subjectRef.current) {
+    if (document.activeElement === subjectRef.current && subjectRef.current) {
       insertTextAtCursor(subjectRef.current, field, subject, setSubject);
       return;
     }
@@ -122,8 +122,8 @@ export function MatchBulkEmail({
   }
 
   function insertMergeHtml(html: string) {
-    if (activeFieldRef.current === "subject") {
-      insertMergeField(html.replace(/<[^>]+>/g, ""));
+    if (document.activeElement === subjectRef.current) {
+      insertMergeField("{{ApplyLink}}");
       return;
     }
     bodyEditorRef.current?.insertHtml(html);

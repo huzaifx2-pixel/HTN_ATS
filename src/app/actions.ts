@@ -21,6 +21,25 @@ import type { PipelineStage } from "@prisma/client";
 const MAX_RESUME_UPLOAD_BYTES = 10 * 1024 * 1024;
 const RESUME_EXTENSIONS = new Set(["pdf", "doc", "docx", "rtf", "txt"]);
 
+function jobsListHref(view: string, search: string) {
+  const params = new URLSearchParams();
+  if (view && view !== "open") params.set("view", view);
+  if (search) params.set("search", search);
+  const qs = params.toString();
+  return qs ? `/jobs?${qs}` : "/jobs";
+}
+
+export async function searchJobsListAction(formData: FormData) {
+  const view = String(formData.get("view") ?? "open");
+  const search = String(formData.get("search") ?? "").trim();
+  redirect(jobsListHref(view, search));
+}
+
+export async function searchMatchingJobsAction(formData: FormData) {
+  const search = String(formData.get("search") ?? "").trim();
+  redirect(search ? `/matching?search=${encodeURIComponent(search)}` : "/matching");
+}
+
 export async function createClientAction(formData: FormData) {
   await clientService.createClient({
       name: formData.get("name") as string,
@@ -218,7 +237,7 @@ export async function updateJobBooleanAction(jobId: string, formData: FormData) 
     requirements,
     preferredQualifications: job.preferredQualifications,
     submittedBoolean: (formData.get("booleanSearch") as string) || null,
-    manualOverride: formData.get("booleanSearchTouched") === "true",
+    manualOverride: true,
     forceRegenerate: formData.get("booleanSearchForceRegenerate") === "true",
   });
 
@@ -300,7 +319,11 @@ export async function addCandidateToJobAction(jobId: string, candidateId: string
 
 export async function recomputeMatchesAction(jobId: string) {
   const ctx = await requireOrgContext();
-  await enqueueJobMatch(ctx.organizationId, jobId, "manual");
+  const { isMatchingKilled } = await import("@/lib/matching/kill-switch");
+  if (await isMatchingKilled(ctx.organizationId)) {
+    throw new Error("Matching is stopped. Resume it from Matching Candidates.");
+  }
+  await enqueueJobMatch(ctx.organizationId, jobId, "manual", { force: true });
   await revalidateOrgPaths([`/jobs/${jobId}`], { jobId, organizationId: ctx.organizationId });
 }
 
@@ -312,12 +335,12 @@ export async function createEmailTemplateAction(formData: FormData) {
     jobId: (formData.get("jobId") as string) || undefined,
     isDefault: false,
   });
-  await revalidateOrgPaths(["/messages/templates"]);
+  await revalidateOrgPaths(["/messages/templates", "/matching", "/jobs"]);
 }
 
 export async function deleteEmailTemplateAction(id: string) {
   await emailService.deleteEmailTemplate(id);
-  await revalidateOrgPaths(["/messages/templates"]);
+  await revalidateOrgPaths(["/messages/templates", "/matching", "/jobs"]);
 }
 
 export async function sendBulkEmailAction(formData: FormData) {

@@ -16,6 +16,32 @@ export function insertTextAtCursor(
   });
 }
 
+/** Insert HTML at the caret of a contenteditable, or append if the caret is elsewhere. */
+export function insertHtmlIntoContentEditable(editor: HTMLElement, html: string) {
+  editor.focus();
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0 || !editor.contains(selection.anchorNode)) {
+    editor.insertAdjacentHTML("beforeend", html);
+    return editor.innerHTML;
+  }
+
+  const range = selection.getRangeAt(0);
+  range.deleteContents();
+  const holder = document.createElement("div");
+  holder.innerHTML = html;
+  const fragment = document.createDocumentFragment();
+  while (holder.firstChild) fragment.appendChild(holder.firstChild);
+  const last = fragment.lastChild;
+  range.insertNode(fragment);
+  if (last) {
+    range.setStartAfter(last);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+  return editor.innerHTML;
+}
+
 export function insertTextAtCursorUncontrolled(
   element: HTMLTextAreaElement | HTMLInputElement,
   text: string

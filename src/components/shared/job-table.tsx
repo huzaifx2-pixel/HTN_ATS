@@ -128,7 +128,9 @@ export function CompactJobTable({
           <EmptyState
             title={emptyMessage}
             description={
-              view === "open"
+              emptyMessage.startsWith("No jobs match")
+                ? "Try a job ID, title, or client name."
+                : view === "open"
                 ? "Import from the website or create a job to get started"
                 : "Jobs no longer on the website are moved here when sync runs"
             }

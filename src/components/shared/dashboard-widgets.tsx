@@ -19,7 +19,7 @@ export function StatCard({
   href?: string;
 }) {
   const isUp = trend !== undefined && trend >= 0;
-  const display = typeof value === "number" ? value.toLocaleString() : value;
+  const display = typeof value === "number" ? value.toLocaleString("en-US") : value;
   const content = (
     <Card className={href ? "transition-shadow hover:shadow-md hover:border-brand-700/40" : undefined}>
       <CardContent className="p-5">

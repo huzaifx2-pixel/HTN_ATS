@@ -46,8 +46,13 @@ export function BooleanSearchEditor({
 }: BooleanSearchEditorProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const touchedRef = useRef<HTMLInputElement>(null);
+  const savedQuery = (defaultValue ?? "").trim();
   const [value, setValue] = useState(defaultValue ?? "");
   const [pending, startTransition] = useTransition();
+
+  useEffect(() => {
+    setValue(defaultValue ?? "");
+  }, [defaultValue]);
 
   const markTouched = () => {
     if (touchedRef.current) touchedRef.current.value = "true";
@@ -161,7 +166,12 @@ export function BooleanSearchEditor({
         placeholder="Generated automatically from the job title and description."
         className="mt-1 flex w-full rounded-lg border border-input bg-card px-3 py-2 text-sm font-mono leading-relaxed"
       />
-      <input ref={touchedRef} type="hidden" name="booleanSearchTouched" defaultValue="false" />
+      <input
+        ref={touchedRef}
+        type="hidden"
+        name="booleanSearchTouched"
+        defaultValue={savedQuery ? "true" : "false"}
+      />
       <input type="hidden" name="booleanSearchForceRegenerate" defaultValue="false" id={`${id}-forceRegenerate`} />
       <p className="mt-1 text-xs text-muted-foreground">
         Auto-generated from the job title and description as you type. Edit freely — your changes are saved as entered.

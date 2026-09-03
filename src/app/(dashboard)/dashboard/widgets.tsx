@@ -56,14 +56,14 @@ export async function DashboardTasks({ organizationId }: { organizationId: strin
         <div>
           <h2 className="text-sm font-semibold mb-3">My Tasks</h2>
           <div className="grid gap-3 sm:grid-cols-2">
-            <TaskCard label="Follow up with Candidates" count={taskCounts.followUpCandidates} href="/candidates" />
+            <TaskCard label="Follow up with Candidates" count={taskCounts.followUpCandidates} href="/matching?tab=follow-up" />
             <TaskCard label="Interviews completed" count={taskCounts.upcomingInterviews} href="/jobs" />
             <TaskCard label="Gmail Imports" count={taskCounts.resumeInboxCount} href="/candidates/inbox" />
             <TaskCard label="Jobs Expiring Soon" count={taskCounts.expiringJobs} href="/jobs" />
             <TaskCard
               label="Pending Match Email"
               count={pendingEmailCount}
-              href="/dashboard?tab=pending-email"
+              href="/matching"
             />
           </div>
         </div>

@@ -51,3 +51,10 @@ export function plainQueryToTsquery(query: string): string | null {
   if (parts.length === 0) return null;
   return parts.map((part) => `${part}:*`).join(" & ");
 }
+
+/** Broad discovery query: any listed term is enough to retrieve. */
+export function termsToOrTsquery(terms: string[]): string | null {
+  const parts = [...new Set(terms.flatMap((term) => term.split(/\s+/).map(lexeme)).filter((part): part is string => Boolean(part)))];
+  if (parts.length === 0) return null;
+  return parts.slice(0, 32).map((part) => `${part}:*`).join(" | ");
+}

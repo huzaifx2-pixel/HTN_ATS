@@ -1,7 +1,8 @@
 import { prisma } from "@/lib/db";
 import { requirePermission } from "@/lib/auth/session";
 import { z } from "zod";
-import type { PipelineStage } from "@prisma/client";
+import type { PipelineStage, Prisma } from "@prisma/client";
+import type { RecruiterMatchAnalysis } from "@/lib/matching/recruiter-engine/types";
 import { markCandidateEngaged } from "@/lib/services/candidate-service";
 
 export async function getJobApplications(jobId: string, organizationId: string) {
@@ -32,13 +33,55 @@ export async function getJobApplications(jobId: string, organizationId: string) 
 
 const MATCH_LIST_LIMIT = 50;
 
+const jobMatchListSelect = {
+  id: true,
+  candidateId: true,
+  score: true,
+  skillsMatch: true,
+  experienceMatch: true,
+  descriptionMatch: true,
+  semanticScore: true,
+  matchStatus: true,
+  confidence: true,
+  requirementBreakdown: true,
+  retrievalScore: true,
+  reason: true,
+  analysis: true,
+  candidate: {
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      currentRole: true,
+      email: true,
+    },
+  },
+} satisfies Prisma.JobMatchSelect;
+
+type JobMatchListRow = Prisma.JobMatchGetPayload<{ select: typeof jobMatchListSelect }>;
+
 const openMatchWhere = (jobId: string) => ({
   jobId,
   candidate: {
     deletedAt: null,
     applications: { none: { jobId } },
   },
+  NOT: {
+    analysis: {
+      path: ["booleanSearch", "passes"],
+      equals: false,
+    },
+  },
 });
+
+function analysisUsesOldSkillEngine(analysis: RecruiterMatchAnalysis | null) {
+  if (!analysis?.sectionScores) return false;
+  return (
+    (analysis.sectionScores.requiredSkills?.maxScore ?? 0) > 0 ||
+    (analysis.sectionScores.responsibilities?.maxScore ?? 0) > 0 ||
+    (analysis.sectionScores.tools?.maxScore ?? 0) > 0
+  );
+}
 
 /** Move candidates who already got a match email onto Applicants. */
 export async function promoteEmailedMatchesToApplicants(jobId: string, organizationId: string) {
@@ -92,47 +135,73 @@ export async function getJobMatches(
   organizationId: string,
   options?: { cursor?: string },
 ) {
-  const job = await prisma.job.findFirst({ where: { id: jobId, organizationId } });
-  if (!job || !job.booleanSearch?.trim()) {
-    return { items: [], total: 0, nextCursor: undefined as string | undefined };
+  const job = await prisma.job.findFirst({ where: { id: jobId, organizationId }, select: { id: true } });
+  if (!job) {
+    return { items: [], total: 0, nextCursor: undefined as string | undefined, rematchQueued: false };
   }
 
   const where = openMatchWhere(jobId);
-  const [rows, total] = await Promise.all([
-    prisma.jobMatch.findMany({
-      where,
-      select: {
-        id: true,
-        candidateId: true,
-        score: true,
-        skillsMatch: true,
-        experienceMatch: true,
-        descriptionMatch: true,
-        semanticScore: true,
-        reason: true,
-        candidate: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            currentRole: true,
-            email: true,
-          },
-        },
-      },
-      orderBy: [{ score: "desc" }, { id: "desc" }],
-      take: MATCH_LIST_LIMIT + 1,
-      ...(options?.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {}),
-    }),
-    prisma.jobMatch.count({ where }),
-  ]);
+  let rows: JobMatchListRow[];
+  let total: number;
+  try {
+    [rows, total] = await Promise.all([
+      prisma.jobMatch.findMany({
+        where,
+        select: jobMatchListSelect,
+        orderBy: [{ score: "desc" }, { id: "desc" }],
+        take: MATCH_LIST_LIMIT + 1,
+        ...(options?.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {}),
+      }),
+      prisma.jobMatch.count({ where }),
+    ]);
+  } catch (error) {
+    console.warn("[matching] Boolean JSON filter failed, falling back:", error);
+    const fallbackWhere = {
+      jobId,
+      candidate: { deletedAt: null, applications: { none: { jobId } } },
+    };
+    [rows, total] = await Promise.all([
+      prisma.jobMatch.findMany({
+        where: fallbackWhere,
+        select: jobMatchListSelect,
+        orderBy: [{ score: "desc" }, { id: "desc" }],
+        take: MATCH_LIST_LIMIT + 1,
+        ...(options?.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {}),
+      }),
+      prisma.jobMatch.count({ where: fallbackWhere }),
+    ]);
+    rows = rows.filter((row) => {
+      const analysis = row.analysis as RecruiterMatchAnalysis | null;
+      return analysis?.booleanSearch?.passes !== false;
+    });
+    total = rows.length;
+  }
 
   const hasMore = rows.length > MATCH_LIST_LIMIT;
-  const items = hasMore ? rows.slice(0, MATCH_LIST_LIMIT) : rows;
+  const page = hasMore ? rows.slice(0, MATCH_LIST_LIMIT) : rows;
+  const stale = page.some((row) => analysisUsesOldSkillEngine(row.analysis as RecruiterMatchAnalysis | null));
+  if (stale) {
+    const { enqueueJobMatch } = await import("@/lib/queue/match-queue");
+    enqueueJobMatch(organizationId, jobId, "boolean-location-engine", { force: true }).catch((error) => {
+      console.warn("[matching] failed to queue Boolean+location rematch:", error);
+    });
+  }
+  const items = page.map((row) => {
+    const analysis = row.analysis as RecruiterMatchAnalysis | null;
+    const { analysis: _analysis, ...rest } = row;
+    return {
+      ...rest,
+      matchStatus: rest.matchStatus ?? analysis?.qualificationStatus ?? null,
+      confidence: rest.confidence ?? analysis?.confidence ?? null,
+      requirementBreakdown:
+        rest.requirementBreakdown ?? analysis?.requirementBreakdown ?? null,
+    };
+  });
   return {
     items,
     total,
     nextCursor: hasMore ? items[items.length - 1]?.id : undefined,
+    rematchQueued: stale,
   };
 }
 
@@ -147,6 +216,12 @@ export async function getOpenMatchEmailRecipients(jobId: string, organizationId:
         deletedAt: null,
         email: { not: "" },
         applications: { none: { jobId } },
+      },
+      NOT: {
+        analysis: {
+          path: ["booleanSearch", "passes"],
+          equals: false,
+        },
       },
     },
     select: {

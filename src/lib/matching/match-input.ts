@@ -10,6 +10,8 @@ export type MatchRowSnapshot = {
   experienceMatch: number;
   descriptionMatch: number;
   semanticScore: number;
+  matchStatus?: string | null;
+  retrievalScore?: number;
   missingSkills: string[];
   reason: string | null;
 };
@@ -23,7 +25,7 @@ export function jobMatchFingerprint(job: {
 }): string {
   const inputHash = computeJobMatchInputHash(matchInputFieldsFromRequirements(job));
   const booleanSearch = job.booleanSearch?.trim() ?? "";
-  return createHash("sha256").update(`${inputHash}:${booleanSearch}`).digest("hex");
+  return createHash("sha256").update(`${inputHash}:${booleanSearch}:v3-boolean-location`).digest("hex");
 }
 
 export function readLastMatchedFingerprint(metadata: unknown): string | undefined {
@@ -52,6 +54,8 @@ export function matchRowsEqual(a: MatchRowSnapshot, b: MatchRowSnapshot): boolea
     a.experienceMatch === b.experienceMatch &&
     a.descriptionMatch === b.descriptionMatch &&
     a.semanticScore === b.semanticScore &&
+    (a.matchStatus ?? null) === (b.matchStatus ?? null) &&
+    (a.retrievalScore ?? 0) === (b.retrievalScore ?? 0) &&
     a.reason === b.reason &&
     JSON.stringify(a.missingSkills) === JSON.stringify(b.missingSkills)
   );
@@ -63,19 +67,28 @@ export function candidateMatchInputsChanged(
     experienceYears?: number | null;
     currentRole?: string | null;
     currentCompany?: string | null;
+    location?: string | null;
+    city?: string | null;
+    country?: string | null;
   },
   after: {
     skills?: unknown;
     experienceYears?: number | null;
     currentRole?: string | null;
     currentCompany?: string | null;
+    location?: string | null;
+    city?: string | null;
+    country?: string | null;
   },
 ): boolean {
   return (
     JSON.stringify(before.skills ?? null) !== JSON.stringify(after.skills ?? null) ||
     before.experienceYears !== after.experienceYears ||
     before.currentRole !== after.currentRole ||
-    before.currentCompany !== after.currentCompany
+    before.currentCompany !== after.currentCompany ||
+    before.location !== after.location ||
+    before.city !== after.city ||
+    before.country !== after.country
   );
 }
 

@@ -23,6 +23,7 @@ import {
   Search,
   FolderUp,
   Sparkles,
+  UserCheck,
 } from "lucide-react";
 
 export type NavItem = {
@@ -42,6 +43,7 @@ export const EXECUTIVE_NAV: NavSection[] = [
     items: [
       { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
       { label: "Jobs", href: "/jobs", icon: Briefcase },
+      { label: "Matching Candidates", href: "/matching", icon: UserCheck },
       { label: "Candidates", href: "/candidates", icon: Users },
       { label: "Talent Pool", href: "/candidates/pool", icon: Database },
       { label: "Talent Search", href: "/candidates/search", icon: Search },

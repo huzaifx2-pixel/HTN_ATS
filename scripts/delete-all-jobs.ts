@@ -36,7 +36,7 @@ function resolveDirectDatabaseUrl(): string {
 process.env.DATABASE_URL = resolveDirectDatabaseUrl();
 
 async function main() {
-  const { PrismaClient } = await import("@prisma/client");
+  const { Prisma, PrismaClient } = await import("@prisma/client");
   const prisma = new PrismaClient();
 
   try {
@@ -69,7 +69,7 @@ async function main() {
     await prisma.orgSettings.updateMany({
       data: {
         websiteJobLastSyncAt: null,
-        websiteJobLastSyncStats: null,
+        websiteJobLastSyncStats: Prisma.DbNull,
       },
     });
 

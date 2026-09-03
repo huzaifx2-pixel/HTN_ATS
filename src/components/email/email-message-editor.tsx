@@ -2,9 +2,10 @@
 
 import {
   forwardRef,
-  useEffect,
+  useLayoutEffect,
   useImperativeHandle,
   useRef,
+  useState,
   useCallback,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
@@ -21,36 +22,8 @@ import {
 import { cn } from "@/lib/utils";
 import { MERGE_LINK_PLACEHOLDERS, mergeFieldFromHref, normalizeApplyUrl } from "@/lib/constants/email";
 import { plainTextToEditorHtml } from "@/lib/email-body-html";
+import { insertHtmlIntoContentEditable } from "@/lib/insert-at-cursor";
 import { Button } from "@/components/ui/button";
-
-function insertHtmlAtCaret(editor: HTMLElement, html: string) {
-  editor.focus();
-  const selection = window.getSelection();
-  if (!selection) {
-    editor.insertAdjacentHTML("beforeend", html);
-    return;
-  }
-
-  if (selection.rangeCount === 0 || !editor.contains(selection.anchorNode)) {
-    editor.insertAdjacentHTML("beforeend", html);
-    return;
-  }
-
-  const range = selection.getRangeAt(0);
-  range.deleteContents();
-  const holder = document.createElement("div");
-  holder.innerHTML = html;
-  const fragment = document.createDocumentFragment();
-  while (holder.firstChild) fragment.appendChild(holder.firstChild);
-  const last = fragment.lastChild;
-  range.insertNode(fragment);
-  if (last) {
-    range.setStartAfter(last);
-    range.collapse(true);
-    selection.removeAllRanges();
-    selection.addRange(range);
-  }
-}
 
 export type EmailMessageEditorHandle = {
   focus: () => void;
@@ -120,21 +93,24 @@ export const EmailMessageEditor = forwardRef<EmailMessageEditorHandle, EmailMess
     ref
   ) {
     const editorRef = useRef<HTMLDivElement>(null);
-    const lastValueRef = useRef(value);
+    const lastEmittedRef = useRef(value);
+    const [initialMarkup] = useState(() => ({ __html: plainTextToEditorHtml(value) }));
 
     const syncFromDom = useCallback(() => {
       const html = editorRef.current?.innerHTML ?? "";
-      lastValueRef.current = html;
+      lastEmittedRef.current = html;
       onChange(html);
     }, [onChange]);
 
-    useEffect(() => {
+    useLayoutEffect(() => {
       const editor = editorRef.current;
       if (!editor) return;
-      if (value === lastValueRef.current) return;
-
-      editor.innerHTML = plainTextToEditorHtml(value);
-      lastValueRef.current = editor.innerHTML;
+      if (value === lastEmittedRef.current) return;
+      const incoming = plainTextToEditorHtml(value);
+      if (editor.innerHTML !== incoming) {
+        editor.innerHTML = incoming;
+      }
+      lastEmittedRef.current = value;
     }, [value]);
 
     useImperativeHandle(ref, () => ({
@@ -142,15 +118,19 @@ export const EmailMessageEditor = forwardRef<EmailMessageEditorHandle, EmailMess
       insertText: (text: string) => {
         const editor = editorRef.current;
         if (!editor) return;
-        editor.focus();
-        document.execCommand("insertText", false, text);
-        syncFromDom();
+        const html = insertHtmlIntoContentEditable(
+          editor,
+          text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"),
+        );
+        lastEmittedRef.current = html;
+        onChange(html);
       },
       insertHtml: (html: string) => {
         const editor = editorRef.current;
         if (!editor) return;
-        insertHtmlAtCaret(editor, html);
-        syncFromDom();
+        const next = insertHtmlIntoContentEditable(editor, html);
+        lastEmittedRef.current = next;
+        onChange(next);
       },
       insertLink: (url: string, label?: string) => {
         const editor = editorRef.current;
@@ -160,8 +140,9 @@ export const EmailMessageEditor = forwardRef<EmailMessageEditorHandle, EmailMess
         const selected = window.getSelection()?.toString().trim();
         const text = selected || label || href;
         const safe = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-        insertHtmlAtCaret(editor, `<a href="${href}">${safe}</a>`);
-        syncFromDom();
+        const next = insertHtmlIntoContentEditable(editor, `<a href="${href}">${safe}</a>`);
+        lastEmittedRef.current = next;
+        onChange(next);
       },
     }));
 
@@ -281,6 +262,7 @@ export const EmailMessageEditor = forwardRef<EmailMessageEditorHandle, EmailMess
           aria-multiline="true"
           className="px-3 py-2 text-sm outline-none [&_a]:text-brand-700 [&_a]:underline [&_a]:cursor-pointer [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5"
           style={{ minHeight }}
+          dangerouslySetInnerHTML={initialMarkup}
           onInput={syncFromDom}
           onFocus={onFocus}
           onClick={handleEditorClick}
