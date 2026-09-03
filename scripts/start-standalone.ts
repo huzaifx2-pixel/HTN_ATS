@@ -22,7 +22,24 @@ prepareStandaloneAssets({ phase: "startup" });
 const standaloneDir = path.join(root, ".next", "standalone");
 const serverEntry = path.join(standaloneDir, "server.js");
 
-const hostname = process.env.HOSTNAME?.trim() || "0.0.0.0";
+// Railway/Docker set HOSTNAME to the container id — never bind to that.
+// Prefer LISTEN_HOST / HOST; only honor HOSTNAME when it is an explicit listen address.
+function resolveListenHost(): string {
+  const explicit = process.env.LISTEN_HOST?.trim() || process.env.HOST?.trim();
+  if (explicit) return explicit;
+  const hostname = process.env.HOSTNAME?.trim();
+  if (
+    hostname === "0.0.0.0" ||
+    hostname === "::" ||
+    hostname === "127.0.0.1" ||
+    hostname === "localhost"
+  ) {
+    return hostname;
+  }
+  return "0.0.0.0";
+}
+
+const hostname = resolveListenHost();
 const port = process.env.PORT?.trim() || "3000";
 
 console.log(`Starting standalone server on http://${hostname}:${port}\n`);
