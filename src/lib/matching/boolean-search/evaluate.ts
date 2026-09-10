@@ -93,3 +93,91 @@ export function evaluateBooleanSearch(
   const result = evaluateBooleanAst(ast, corpus);
   return { ...result, query };
 }
+
+function normalizeTitleKey(value: string) {
+  return normalizeBooleanText(value)
+    .replace(/\b(phd|sr|jr|senior|junior|lead|principal|staff|expert|specialist|based|remote)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function nodeLooksLikeJobTitle(node: BooleanNode, jobTitle: string): boolean {
+  const titleKey = normalizeTitleKey(jobTitle);
+  if (!titleKey || titleKey.length < 4) return false;
+
+  if (node.type === "term") {
+    const termKey = normalizeTitleKey(node.value);
+    if (!termKey) return false;
+    return termKey === titleKey || titleKey.includes(termKey) || termKey.includes(titleKey);
+  }
+  if (node.type === "or") {
+    return nodeLooksLikeJobTitle(node.left, jobTitle) || nodeLooksLikeJobTitle(node.right, jobTitle);
+  }
+  return false;
+}
+
+function titleTokenOrNode(jobTitle: string): BooleanNode | null {
+  const stop = new Set([
+    "phd",
+    "sr",
+    "jr",
+    "senior",
+    "junior",
+    "lead",
+    "principal",
+    "staff",
+    "expert",
+    "specialist",
+    "based",
+    "remote",
+    "the",
+    "and",
+    "or",
+    "for",
+    "with",
+  ]);
+  const tokens = normalizeBooleanText(jobTitle)
+    .split(/\s+/)
+    .map((token) => token.replace(/[^a-z0-9.+#]/g, ""))
+    .filter((token) => token.length > 3 && !stop.has(token));
+  if (tokens.length === 0) return null;
+
+  const terms = [...new Set(tokens)];
+  for (let i = 0; i < tokens.length - 1; i++) {
+    terms.push(`${tokens[i]} ${tokens[i + 1]}`);
+  }
+
+  const nodes: BooleanNode[] = terms.map((value) => ({
+    type: "term",
+    value,
+    quoted: value.includes(" "),
+  }));
+  return nodes.reduce((left, right) => ({ type: "or", left, right }));
+}
+
+/**
+ * Generated Booleans often require the exact job title phrase, which almost never
+ * appears on resumes. Soften that clause to meaningful title tokens while keeping
+ * the rest of the Boolean (skills, tools, location terms) required.
+ */
+export function withRelaxedJobTitleRequirement(ast: BooleanNode, jobTitle: string): BooleanNode {
+  if (ast.type !== "and") return ast;
+
+  if (nodeLooksLikeJobTitle(ast.left, jobTitle)) {
+    const relaxedTitle = titleTokenOrNode(jobTitle);
+    // Drop exact-title gate; keep skill/requirement side as the hard filter.
+    if (!relaxedTitle) return ast.right;
+    return { type: "and", left: relaxedTitle, right: ast.right };
+  }
+
+  // Generated queries are left-associative: (((title) AND skill1) AND skill2)...
+  if (ast.left.type === "and") {
+    return {
+      type: "and",
+      left: withRelaxedJobTitleRequirement(ast.left, jobTitle),
+      right: ast.right,
+    };
+  }
+
+  return ast;
+}

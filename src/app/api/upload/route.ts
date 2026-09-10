@@ -149,7 +149,16 @@ export async function POST(request: NextRequest) {
 
     await notifyCandidateUpload();
 
-    return NextResponse.json(result);
+    return NextResponse.json({
+      duplicate: result.duplicate,
+      candidate: result.candidate
+        ? {
+            id: result.candidate.id,
+            firstName: result.candidate.firstName,
+            lastName: result.candidate.lastName,
+          }
+        : undefined,
+    });
 
   } catch (error) {
     return apiErrorResponse(error);
@@ -157,5 +166,3 @@ export async function POST(request: NextRequest) {
   }
 
 }
-
-

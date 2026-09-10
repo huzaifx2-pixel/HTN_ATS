@@ -1,45 +1,27 @@
-import { prisma } from "@/lib/db";
-import { sendTemplatedEmailInternal } from "@/lib/services/email-service";
-import { getGmailConnection } from "@/lib/services/gmail-service";
+import { sendTemplatedEmailInternal, candidateAlreadyEmailedForJob } from "@/lib/services/email-service";
+import { resolveOrgGmailSender } from "@/lib/services/gmail-service";
 import { logSystemEvent } from "@/lib/system-logger";
 import { enqueueEmailRetry } from "@/lib/services/email-retry-service";
+import { enqueueMatchOutreach, hasActiveOutreachMailbox } from "@/lib/services/match-outreach-queue-service";
+import { isMatchAnalysisDismissed } from "@/lib/matching/match-dismissed";
+import { prisma } from "@/lib/db";
 
 async function resolveSenderUserId(organizationId: string, jobOwnerId?: string | null) {
-  if (jobOwnerId) {
-    const conn = await getGmailConnection(jobOwnerId);
-    if (conn) return jobOwnerId;
-  }
-
-  const members = await prisma.member.findMany({
-    where: { organizationId },
-    select: { userId: true },
-  });
-
-  for (const member of members) {
-    const conn = await getGmailConnection(member.userId);
-    if (conn) return member.userId;
-  }
-
-  return null;
-}
-
-async function alreadyEmailedForJob(candidateId: string, jobId: string) {
-  const message = await prisma.emailMessage.findFirst({
-    where: { candidateId, jobId, sentAt: { not: null } },
-  });
-  return !!message;
+  const sender = await resolveOrgGmailSender(organizationId, jobOwnerId);
+  return sender?.userId ?? null;
 }
 
 export async function processAutoEmailsForJob(jobId: string, organizationId: string) {
   const job = await prisma.job.findFirst({
     where: { id: jobId, organizationId, status: "OPEN", autoEmailEnabled: true },
   });
-  if (!job?.autoEmailTemplateId) return { sent: 0, skipped: 0 };
+  if (!job?.autoEmailTemplateId) return { sent: 0, skipped: 0, queued: 0 };
 
-  const senderUserId = await resolveSenderUserId(organizationId, job.ownerId);
-  if (!senderUserId) {
+  const usePool = await hasActiveOutreachMailbox(organizationId);
+  const senderUserId = usePool ? null : await resolveSenderUserId(organizationId, job.ownerId);
+  if (!usePool && !senderUserId) {
     console.warn(`[auto-email] No Gmail connection for org ${organizationId}, job ${job.jobCode}`);
-    return { sent: 0, skipped: 0, error: "no_gmail" };
+    return { sent: 0, skipped: 0, queued: 0, error: "no_gmail" };
   }
 
   const minScore = job.autoEmailMinScore ?? 70;
@@ -51,20 +33,33 @@ export async function processAutoEmailsForJob(jobId: string, organizationId: str
       },
     },
     orderBy: { score: "desc" },
-    take: 50,
   });
 
   let sent = 0;
   let skipped = 0;
+  let queued = 0;
 
   for (const match of matches) {
-    if (match.candidate.deletedAt || !match.candidate.email) {
+    if (isMatchAnalysisDismissed(match.analysis) || match.candidate.deletedAt || !match.candidate.email) {
       skipped++;
       continue;
     }
 
-    if (await alreadyEmailedForJob(match.candidateId, jobId)) {
+    if (await candidateAlreadyEmailedForJob(match.candidateId, jobId)) {
       skipped++;
+      continue;
+    }
+
+    if (usePool) {
+      const result = await enqueueMatchOutreach({
+        organizationId,
+        jobId,
+        candidateId: match.candidateId,
+        templateId: job.autoEmailTemplateId,
+        autoSent: true,
+      });
+      if (result.created) queued++;
+      else skipped++;
       continue;
     }
 
@@ -74,7 +69,7 @@ export async function processAutoEmailsForJob(jobId: string, organizationId: str
         jobId,
         candidateId: match.candidateId,
         templateId: job.autoEmailTemplateId,
-        userId: senderUserId,
+        userId: senderUserId!,
         autoSent: true,
       });
       if (result.skipped) {
@@ -109,17 +104,17 @@ export async function processAutoEmailsForJob(jobId: string, organizationId: str
     }
   }
 
-  if (sent > 0) {
+  if (sent > 0 || queued > 0) {
     await prisma.jobActivity.create({
       data: {
         jobId,
         action: "job.auto_email_sent",
-        metadata: { sent, skipped, minScore, templateId: job.autoEmailTemplateId },
+        metadata: { sent, skipped, queued, minScore, templateId: job.autoEmailTemplateId },
       },
     });
   }
 
-  return { sent, skipped };
+  return { sent, skipped, queued };
 }
 
 export async function processAutoEmailsForCandidate(candidateId: string, organizationId: string) {
@@ -127,26 +122,41 @@ export async function processAutoEmailsForCandidate(candidateId: string, organiz
     where: { id: candidateId, organizationId, deletedAt: null },
     select: { email: true },
   });
-  if (!candidate?.email) return { sent: 0, skipped: 0 };
+  if (!candidate?.email) return { sent: 0, skipped: 0, queued: 0 };
 
   const jobs = await prisma.job.findMany({
     where: { organizationId, status: "OPEN", autoEmailEnabled: true, autoEmailTemplateId: { not: null } },
   });
 
+  const usePool = await hasActiveOutreachMailbox(organizationId);
   let sent = 0;
   let skipped = 0;
+  let queued = 0;
 
   for (const job of jobs) {
     const minScore = job.autoEmailMinScore ?? 70;
     const match = await prisma.jobMatch.findFirst({
       where: { jobId: job.id, candidateId, score: { gte: minScore } },
     });
-    if (!match) {
+    if (!match || isMatchAnalysisDismissed(match.analysis)) {
       skipped++;
       continue;
     }
-    if (await alreadyEmailedForJob(candidateId, job.id)) {
+    if (await candidateAlreadyEmailedForJob(candidateId, job.id)) {
       skipped++;
+      continue;
+    }
+
+    if (usePool) {
+      const result = await enqueueMatchOutreach({
+        organizationId,
+        jobId: job.id,
+        candidateId,
+        templateId: job.autoEmailTemplateId,
+        autoSent: true,
+      });
+      if (result.created) queued++;
+      else skipped++;
       continue;
     }
 
@@ -185,7 +195,7 @@ export async function processAutoEmailsForCandidate(candidateId: string, organiz
     }
   }
 
-  return { sent, skipped };
+  return { sent, skipped, queued };
 }
 
 export async function processAutoEmailsForOrganization(organizationId: string) {
@@ -195,9 +205,11 @@ export async function processAutoEmailsForOrganization(organizationId: string) {
   });
 
   let sent = 0;
+  let queued = 0;
   for (const job of jobs) {
     const result = await processAutoEmailsForJob(job.id, organizationId);
     sent += result.sent;
+    queued += result.queued ?? 0;
   }
-  return { sent };
+  return { sent, queued };
 }

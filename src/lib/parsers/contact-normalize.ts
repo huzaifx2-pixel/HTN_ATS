@@ -156,7 +156,7 @@ const NAME_NOISE_TOKENS = new Set([
 ]);
 
 const FILENAME_STRIP =
-  /\b(20\d{2}|resume|cv|curriculum|vitae|updated|final|copy|draft|portfolio|submittal|docx?|pdf)\b/gi;
+  /\b(20\d{2}|resume|cv|curriculum|vitae|updated|final|copy|draft|portfolio|submittal|docx?|pdf|reactjs|react)\b/gi;
 
 export function titleCasePersonName(value: string): string {
   const trimmed = normalizeWhitespace(value);

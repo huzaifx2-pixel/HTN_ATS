@@ -5,8 +5,8 @@ import { z } from "zod";
 import { applyMergeFields, buildEmailMergeData } from "@/lib/constants/email";
 import { formatEmailBodyHtml } from "@/lib/email-body-html";
 import {
-  getGmailSendCredentials,
-  sendEmailAsUser,
+  getGmailSendCredentialsForOrg,
+  sendEmailAsOrg,
   sendEmailWithCredentials,
 } from "@/lib/services/gmail-service";
 import { promoteMatchToApplicant } from "@/lib/services/pipeline-service";
@@ -97,7 +97,7 @@ export async function candidateAlreadyEmailedForJob(candidateId: string, jobId: 
       where: {
         candidateId,
         jobId,
-        status: { in: ["PENDING", "PROCESSING", "SENT"] },
+        status: "SENT",
       },
     }),
     prisma.candidateActivity.findFirst({
@@ -122,11 +122,12 @@ export async function sendTemplatedEmailInternal(input: {
   organizationId: string;
   jobId: string;
   candidateId: string;
-  templateId?: string;
-  customLink?: string;
-  subject?: string;
-  body?: string;
-  userId: string;
+  templateId?: string | null;
+  customLink?: string | null;
+  subject?: string | null;
+  body?: string | null;
+  userId?: string | null;
+  outreachMailboxId?: string | null;
   autoSent?: boolean;
   skipDuplicateCheck?: boolean;
 }) {
@@ -147,7 +148,7 @@ export async function sendTemplatedEmailInternal(input: {
           where: { id: input.templateId, organizationId: input.organizationId },
         })
       : Promise.resolve(null),
-    prisma.user.findUnique({ where: { id: input.userId } }),
+    input.userId ? prisma.user.findUnique({ where: { id: input.userId } }) : Promise.resolve(null),
   ]);
 
   if (!job) throw new Error("Job not found");
@@ -212,7 +213,27 @@ export async function sendTemplatedEmailInternal(input: {
   }
 
   try {
-    await sendEmailAsUser(input.userId, candidate.email, subject, bodyHtml);
+    if (input.outreachMailboxId) {
+      const { sendEmailAsOutreachMailbox } = await import("@/lib/services/outreach-mailbox-service");
+      await sendEmailAsOutreachMailbox(input.outreachMailboxId, candidate.email, subject, bodyHtml);
+    } else {
+      const { claimOutreachMailbox, hasActiveOutreachMailbox, recordOutreachSend, sendEmailAsOutreachMailbox } =
+        await import("@/lib/services/outreach-mailbox-service");
+      if (await hasActiveOutreachMailbox(input.organizationId)) {
+        const claim = await claimOutreachMailbox(input.organizationId, 0);
+        if (!("mailbox" in claim)) {
+          throw new Error(
+            claim.reason === "quota"
+              ? "All outreach Gmail accounts have reached their daily limit. The invite will send after midnight UTC, or raise a daily limit in Integrations."
+              : "Connect an outreach Gmail account in Integrations.",
+          );
+        }
+        await sendEmailAsOutreachMailbox(claim.mailbox.id, candidate.email, subject, bodyHtml);
+        await recordOutreachSend(claim.mailbox.id);
+      } else {
+        await sendEmailAsOrg(input.organizationId, input.userId, candidate.email, subject, bodyHtml);
+      }
+    }
   } catch (error) {
     if (emailMessageId) {
       await prisma.emailMessage.delete({ where: { id: emailMessageId } }).catch(() => undefined);
@@ -441,7 +462,7 @@ export async function sendBulkTemplatedEmailsToCandidates(input: {
           distinct: ["candidateId"],
         })
       : Promise.resolve([] as Array<{ candidateId: string | null }>),
-    getGmailSendCredentials(input.userId),
+    getGmailSendCredentialsForOrg(organizationId, input.userId),
   ]);
 
   if (!job) throw new Error("Job not found");
@@ -527,7 +548,7 @@ export async function sendBulkTemplatedEmailsToCandidates(input: {
       const trackingId = randomUUID();
       const bodyHtml = embedTrackingPixel(formatEmailBodyHtml(bodyPlain), trackingId);
 
-      await sendEmailWithCredentials(input.userId, gmail, candidate.email, subject, bodyHtml);
+      await sendEmailWithCredentials(gmail.senderUserId, gmail, candidate.email, subject, bodyHtml);
 
       if (campaign && resolvedTemplateId) {
         await recordEmailMessage({
@@ -638,15 +659,22 @@ export async function sendMatchingHubEmails(input: {
     throw new Error("Select at least one job to email");
   }
 
+  const { enqueueMatchOutreach, hasActiveOutreachMailbox, processMatchOutreachQueue } = await import(
+    "@/lib/services/match-outreach-queue-service"
+  );
+  if (!(await hasActiveOutreachMailbox(input.organizationId))) {
+    throw new Error("Connect Gmail in Integrations to email matching candidates.");
+  }
+
   const groups =
     input.kind === "followup"
       ? await getFollowUpRecipientsByJob(input.organizationId, {
           jobIds,
-          limit: jobIds.length === 1 ? 500 : 2000,
+          limit: jobIds.length === 1 ? 2000 : 10000,
         })
       : await getPendingMatchRecipientsByJob(input.organizationId, {
           jobIds,
-          limit: jobIds.length === 1 ? 500 : 2000,
+          limit: jobIds.length === 1 ? 2000 : 10000,
         });
 
   const total = groups.reduce((sum, group) => sum + group.recipients.length, 0);
@@ -654,8 +682,7 @@ export async function sendMatchingHubEmails(input: {
     throw new Error(input.kind === "followup" ? "No follow-up recipients" : "No remaining matches to email");
   }
 
-  let sent = 0;
-  let failed = 0;
+  let queued = 0;
   let skipped = 0;
   const failures: Array<{ candidateId: string; error: string }> = [];
 
@@ -670,36 +697,51 @@ export async function sendMatchingHubEmails(input: {
   });
 
   for (const group of groups) {
-    if (group.recipients.length === 0) continue;
-    const result = await sendBulkTemplatedEmailsToCandidates({
-      jobId: group.jobId,
-      candidateIds: group.recipients.map((recipient) => recipient.candidateId),
-      templateId: input.templateId,
-      customLink: input.customLink ?? group.applyLink,
-      subject: input.subject,
-      body: input.body,
-      userId: input.userId,
-      organizationId: input.organizationId,
-      skipDuplicates: input.kind === "outreach",
-      onProgress: async (event) => {
-        await input.onProgress?.({
-          sent: sent + event.sent,
-          failed: failed + event.failed,
-          skipped: skipped + event.skipped,
-          total,
-          currentRecipient: event.currentRecipient,
-          candidateId: event.candidateId,
-          jobTitle: group.jobTitle,
+    for (const recipient of group.recipients) {
+      try {
+        if (input.kind === "outreach" && (await candidateAlreadyEmailedForJob(recipient.candidateId, group.jobId))) {
+          skipped++;
+        } else {
+          const result = await enqueueMatchOutreach({
+            organizationId: input.organizationId,
+            jobId: group.jobId,
+            candidateId: recipient.candidateId,
+            templateId: input.templateId,
+            senderUserId: input.userId,
+            subject: input.subject,
+            body: input.body,
+            customLink: input.customLink ?? group.applyLink,
+            autoSent: false,
+          });
+          if (result.created) queued++;
+          else skipped++;
+        }
+      } catch (error) {
+        failures.push({
+          candidateId: recipient.candidateId,
+          error: error instanceof Error ? error.message : "Failed to queue email",
         });
-      },
-    });
-    sent += result.sent;
-    failed += result.failed;
-    skipped += result.skipped;
-    failures.push(...result.failures);
+      }
+
+      await input.onProgress?.({
+        sent: queued,
+        failed: failures.length,
+        skipped,
+        total,
+        currentRecipient: recipient.name,
+        candidateId: recipient.candidateId,
+        jobTitle: group.jobTitle,
+      });
+    }
   }
 
-  return { sent, failed, skipped, total, failures };
+  if (queued > 0) {
+    await processMatchOutreachQueue({ timeBudgetMs: 25_000, maxSends: 8 }).catch((error) => {
+      console.error("[match-outreach] immediate drain failed", error);
+    });
+  }
+
+  return { sent: queued, queued, failed: failures.length, skipped, total, failures };
 }
 
 async function mapPool<T>(items: T[], concurrency: number, worker: (item: T) => Promise<void>) {

@@ -345,6 +345,8 @@ export async function createJob(input: z.infer<typeof createJobSchema>) {
     });
   const normalizedBoolean = normalizeBooleanSearch(resolvedBoolean);
 
+  const referralLink = data.referralLink?.trim() || undefined;
+
   const job = await prisma.job.create({
     data: {
       organizationId: ctx.organizationId,
@@ -354,7 +356,9 @@ export async function createJob(input: z.infer<typeof createJobSchema>) {
       title: data.title,
       description: data.description,
       location: data.location,
-      referralLink: data.referralLink?.trim() || undefined,
+      referralLink,
+      referralKey: referralLink || undefined,
+      applyUrl: referralLink || undefined,
       openings: data.openings,
       requirements: data.requirements,
       status: data.status as JobStatus,
@@ -418,6 +422,33 @@ export async function updateJob(
   input: Omit<Partial<z.infer<typeof createJobSchema>>, "referralLink"> & {
     referralLink?: string | null;
     country?: string | null;
+    city?: string | null;
+    state?: string | null;
+    zip?: string | null;
+    address1?: string | null;
+    address2?: string | null;
+    department?: string | null;
+    jobFunction?: string | null;
+    seniority?: string | null;
+    employmentType?: "FULL_TIME" | "PART_TIME" | "CONTRACT" | "TEMPORARY" | "INTERNSHIP" | "FREELANCE" | "VOLUNTEER" | null;
+    workplaceType?: "ON_SITE" | "HYBRID" | "REMOTE" | null;
+    ownerId?: string | null;
+    priority?: "LOW" | "MEDIUM" | "HIGH" | "URGENT";
+    billRateMin?: number | null;
+    billRateMax?: number | null;
+    payRateMin?: number | null;
+    payRateMax?: number | null;
+    ratePeriod?: string | null;
+    startDate?: string | null;
+    endDate?: string | null;
+    maxSubmissions?: number | null;
+    requireResume?: boolean;
+    travelRequired?: boolean;
+    otRequired?: boolean;
+    referencesRequired?: boolean;
+    drugTestRequired?: boolean;
+    backgroundCheckRequired?: boolean;
+    securityClearanceRequired?: boolean;
     salaryMin?: number | null;
     salaryMax?: number | null;
     salaryCurrency?: string | null;
@@ -439,30 +470,7 @@ export async function updateJob(
 ) {
   const ctx = await requirePermission("edit_job");
 
-  const data: {
-    title?: string;
-    description?: string | null;
-    location?: string | null;
-    country?: string | null;
-    openings?: number;
-    status?: JobStatus;
-    requirements?: object;
-    referralLink?: string | null;
-    expiresAt?: Date | null;
-    salaryMin?: number | null;
-    salaryMax?: number | null;
-    salaryCurrency?: string | null;
-    experienceMin?: number | null;
-    preferredQualifications?: string | null;
-    jobCode?: string;
-    metadata?: object;
-    autoEmailEnabled?: boolean;
-    autoEmailTemplateId?: string | null;
-    autoEmailMinScore?: number;
-    booleanSearch?: string | null;
-    client?: { connect: { id: string } };
-    booleanSearchUpdatedAt?: Date | null;
-  } = {};
+  const data: Prisma.JobUpdateInput = {};
 
   if (input.jobCode !== undefined) {
     const jobCode = input.jobCode.trim();
@@ -485,6 +493,37 @@ export async function updateJob(
   if (input.description !== undefined) data.description = input.description ?? null;
   if (input.location !== undefined) data.location = input.location ?? null;
   if (input.country !== undefined) data.country = input.country ?? null;
+  if (input.city !== undefined) data.city = input.city ?? null;
+  if (input.state !== undefined) data.state = input.state ?? null;
+  if (input.zip !== undefined) data.zip = input.zip ?? null;
+  if (input.address1 !== undefined) data.address1 = input.address1 ?? null;
+  if (input.address2 !== undefined) data.address2 = input.address2 ?? null;
+  if (input.department !== undefined) data.department = input.department ?? null;
+  if (input.jobFunction !== undefined) data.jobFunction = input.jobFunction ?? null;
+  if (input.seniority !== undefined) data.seniority = input.seniority ?? null;
+  if (input.employmentType !== undefined) data.employmentType = input.employmentType;
+  if (input.workplaceType !== undefined) data.workplaceType = input.workplaceType;
+  if (input.ownerId !== undefined) {
+    data.owner = input.ownerId ? { connect: { id: input.ownerId } } : { disconnect: true };
+  }
+  if (input.priority !== undefined) data.priority = input.priority;
+  if (input.billRateMin !== undefined) data.billRateMin = input.billRateMin;
+  if (input.billRateMax !== undefined) data.billRateMax = input.billRateMax;
+  if (input.payRateMin !== undefined) data.payRateMin = input.payRateMin;
+  if (input.payRateMax !== undefined) data.payRateMax = input.payRateMax;
+  if (input.ratePeriod !== undefined) data.ratePeriod = input.ratePeriod ?? null;
+  if (input.startDate !== undefined) data.startDate = input.startDate ? new Date(input.startDate) : null;
+  if (input.endDate !== undefined) data.endDate = input.endDate ? new Date(input.endDate) : null;
+  if (input.maxSubmissions !== undefined) data.maxSubmissions = input.maxSubmissions;
+  if (input.requireResume !== undefined) data.requireResume = input.requireResume;
+  if (input.travelRequired !== undefined) data.travelRequired = input.travelRequired;
+  if (input.otRequired !== undefined) data.otRequired = input.otRequired;
+  if (input.referencesRequired !== undefined) data.referencesRequired = input.referencesRequired;
+  if (input.drugTestRequired !== undefined) data.drugTestRequired = input.drugTestRequired;
+  if (input.backgroundCheckRequired !== undefined) data.backgroundCheckRequired = input.backgroundCheckRequired;
+  if (input.securityClearanceRequired !== undefined) {
+    data.securityClearanceRequired = input.securityClearanceRequired;
+  }
   if (input.openings !== undefined) data.openings = input.openings;
   if (input.status !== undefined) data.status = input.status as JobStatus;
   if (input.requirements !== undefined) data.requirements = input.requirements as object;
@@ -522,7 +561,7 @@ export async function updateJob(
         ? { ...(existing.metadata as Record<string, unknown>) }
         : {};
     metadata.salaryPeriod = input.salaryPeriod ?? DEFAULT_SALARY_PERIOD;
-    data.metadata = metadata;
+    data.metadata = metadata as Prisma.InputJsonValue;
   }
 
   const job = await prisma.job.update({
@@ -610,6 +649,23 @@ export async function getJobActivities(jobId: string, organizationId: string) {
       },
     },
   });
+}
+
+export async function getJobActivitiesWithActors(jobId: string, organizationId: string) {
+  const rows = await getJobActivities(jobId, organizationId);
+  const actorIds = [...new Set(rows.map((row) => row.actorId).filter(Boolean))] as string[];
+  const actors =
+    actorIds.length === 0
+      ? []
+      : await prisma.user.findMany({
+          where: { id: { in: actorIds } },
+          select: { id: true, name: true, image: true },
+        });
+  const actorMap = new Map(actors.map((actor) => [actor.id, actor]));
+  return rows.map((row) => ({
+    ...row,
+    actor: row.actorId ? actorMap.get(row.actorId) ?? null : null,
+  }));
 }
 
 export async function bulkCloseJobs(jobIds: string[], organizationId: string, actorId: string) {

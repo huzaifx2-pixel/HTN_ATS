@@ -24,9 +24,9 @@ export { matchJobFamily, JOB_FAMILY_TEMPLATES } from "./job-family-templates";
 export { normalizeJobTitle } from "./title-normalize";
 
 import { parseBooleanQuery } from "./parse";
-import { evaluateBooleanSearch } from "./evaluate";
+import { evaluateBooleanSearch, withRelaxedJobTitleRequirement } from "./evaluate";
 
-export function runBooleanSearch(query: string, corpus: string) {
+export function runBooleanSearch(query: string, corpus: string, jobTitle?: string) {
   const parsed = parseBooleanQuery(query);
   if (!parsed.ok) {
     return {
@@ -35,9 +35,21 @@ export function runBooleanSearch(query: string, corpus: string) {
     };
   }
 
-  const evaluation = evaluateBooleanSearch(parsed.ast, corpus, query.trim());
+  const trimmed = query.trim();
+  const strict = evaluateBooleanSearch(parsed.ast, corpus, trimmed);
+  if (strict.passes || !jobTitle?.trim()) {
+    return {
+      ok: true as const,
+      ...strict,
+    };
+  }
+
+  const relaxedAst = withRelaxedJobTitleRequirement(parsed.ast, jobTitle);
+  const relaxed = evaluateBooleanSearch(relaxedAst, corpus, trimmed);
   return {
     ok: true as const,
-    ...evaluation,
+    ...relaxed,
   };
 }
+
+export { withRelaxedJobTitleRequirement } from "./evaluate";

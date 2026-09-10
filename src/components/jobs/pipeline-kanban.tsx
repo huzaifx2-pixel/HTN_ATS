@@ -16,6 +16,8 @@ export function PipelineKanban({
     stage: PipelineStage;
     candidateName: string;
     currentRole?: string | null;
+    location?: string | null;
+    updatedLabel?: string | null;
   }>;
 }) {
   const router = useRouter();
@@ -30,6 +32,8 @@ export function PipelineKanban({
         id: a.id,
         candidateName: a.candidateName,
         currentRole: a.currentRole,
+        location: a.location,
+        updatedLabel: a.updatedLabel,
       })),
   }));
 

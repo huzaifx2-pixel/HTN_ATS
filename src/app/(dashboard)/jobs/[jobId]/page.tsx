@@ -1,37 +1,61 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { getActiveOrganization, getSession } from "@/lib/auth/session";
-import { getJob, getJobActivities } from "@/lib/services/job-service";
+import { getJob, getJobActivitiesWithActors } from "@/lib/services/job-service";
 import { listClients } from "@/lib/services/client-service";
-import { getJobApplications, getJobMatches, promoteEmailedMatchesToApplicants } from "@/lib/services/pipeline-service";
+import { getJobApplications, getJobMatches, getJobMatchScoreBuckets, promoteEmailedMatchesToApplicants } from "@/lib/services/pipeline-service";
 import { getEmailCampaignStats, listEmailTemplates, seedDefaultEmailTemplates } from "@/lib/services/email-service";
-import { getGmailConnection } from "@/lib/services/gmail-service";
+import { resolveOrgGmailSender } from "@/lib/services/gmail-service";
+import { getOutreachPoolSummary } from "@/lib/services/outreach-mailbox-service";
+import { getOrgMembers } from "@/lib/services/analytics-service";
+import { listJobNotes, listJobDocuments } from "@/lib/services/job-note-service";
 import { MatchCandidateEmail } from "@/components/jobs/match-candidate-email";
 import { MatchBulkEmail } from "@/components/jobs/match-bulk-email";
+import { DismissMatchButton } from "@/components/jobs/dismiss-match-button";
 import { MatchingRematchButton } from "@/components/matching/matching-rematch-button";
 import { MatchAnalysisPanel } from "@/components/jobs/match-analysis-panel";
 import { MatchWhySummary, type MatchWhyData, hasBooleanLocationBreakdown } from "@/components/jobs/match-why-summary";
 import { getJobReferralUrl, formatJobTimestamp } from "@/lib/utils";
-import { PageHeader, EmptyState } from "@/components/shared/dashboard-widgets";
-import { StatusBadge, MatchScoreBadge, StageBadge } from "@/components/ui/badge";
+import { EmptyState } from "@/components/shared/dashboard-widgets";
+import { MatchScoreBadge, StageBadge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { PipelineKanban } from "@/components/jobs/pipeline-kanban";
 import { formatDistanceToNow } from "date-fns";
 import { ReferralLinkCopy } from "@/components/jobs/referral-link-copy";
-import { CountrySelect } from "@/components/jobs/country-select";
-import { getSalaryPeriodFromMetadata, SALARY_PERIODS } from "@/lib/constants/salary-periods";
+import { getSalaryPeriodFromMetadata } from "@/lib/constants/salary-periods";
 import { formatJobLocation, formatJobSalary, getJobSalaryFields, resolveJobDisplayDate } from "@/lib/format-job";
 import { BooleanSearchEditor } from "@/components/jobs/boolean-search-editor";
-import { updateJobBooleanAction, addCandidateToJobAction } from "@/app/actions";
-import { JobDescriptionView } from "@/components/jobs/job-description-view";
+import { addCandidateToJobAction } from "@/app/actions";
 import { CursorPagination } from "@/components/shared/cursor-pagination";
 import { SaveJobTemplateForm } from "@/components/jobs/save-job-template-form";
 import { LinkedInMatchesPanel } from "@/components/jobs/linkedin-matches-panel";
 import { MatchingChannelTabs, parseMatchingChannel } from "@/components/jobs/matching-channel-tabs";
 import { getJobAnalytics } from "@/lib/services/job-analytics-service";
 import { JobAnalyticsPanel } from "@/components/jobs/job-analytics-panel";
+import { JobDetailHeader } from "@/components/jobs/detail/job-detail-header";
+import { JobDetailForm } from "@/components/jobs/detail/job-detail-form";
+import { JobOverviewPanel } from "@/components/jobs/detail/job-overview-panel";
+import { JobNotesPanel } from "@/components/jobs/detail/job-notes-panel";
+import { JobDocumentsPanel } from "@/components/jobs/detail/job-documents-panel";
+import { formatActivityAction } from "@/lib/activity/format";
+
+function normalizeTab(rawTab: string) {
+  if (rawTab === "candidates") return "applicants";
+  if (rawTab === "settings") return "edit";
+  if (rawTab === "attachments") return "documents";
+  if (rawTab === "audit" || rawTab === "audit-trail") return "activity";
+  return rawTab;
+}
+
+function candidateLocation(candidate: {
+  city?: string | null;
+  location?: string | null;
+  country?: string | null;
+}) {
+  return [candidate.city, candidate.location, candidate.country].filter(Boolean).join(", ") || null;
+}
 
 export default async function JobDetailPage({
   params,
@@ -42,7 +66,7 @@ export default async function JobDetailPage({
 }) {
   const { jobId } = await params;
   const { tab: rawTab = "overview", cursor, channel: rawChannel } = await searchParams;
-  const tab = rawTab === "candidates" ? "applicants" : rawTab === "settings" ? "edit" : rawTab;
+  const tab = normalizeTab(rawTab);
   const matchingChannel = parseMatchingChannel(rawChannel);
   const session = await getSession();
   if (!session?.user) redirect("/login");
@@ -52,30 +76,54 @@ export default async function JobDetailPage({
   const job = await getJob(jobId.trim(), member.organizationId);
   if (!job) notFound();
 
-  const needsApplications = tab === "applicants" || tab === "pipeline";
+  const needsApplications = tab === "applicants" || tab === "pipeline" || tab === "overview";
   const needsInternalMatches = tab === "matching" && matchingChannel === "internal";
-  const needsMatches = needsInternalMatches;
-  const needsActivities = tab === "activity";
+  const needsMatchBuckets = tab === "overview";
+  const needsActivities = tab === "activity" || tab === "overview";
   const needsClients = tab === "edit";
-  const needsEmail = tab === "email" || needsInternalMatches;
+  const needsMembers = tab === "edit";
+  const needsEmail = tab === "email" || (tab === "matching" && matchingChannel === "internal");
   const needsEmailTemplates = needsEmail || tab === "edit";
-
   const needsAnalytics = tab === "analytics";
+  const needsNotes = tab === "notes";
+  const needsDocuments = tab === "documents";
 
-  if (needsMatches) {
+  if (tab === "matching" && matchingChannel === "internal") {
     await promoteEmailedMatchesToApplicants(jobId, member.organizationId);
   }
 
-  const [applications, matches, activities, emailStats, clients, gmail, jobAnalytics] = await Promise.all([
+  const [
+    applications,
+    matches,
+    matchBuckets,
+    activities,
+    emailStats,
+    clients,
+    gmail,
+    outreach,
+    jobAnalytics,
+    orgMembers,
+    notes,
+    documents,
+  ] = await Promise.all([
     needsApplications ? getJobApplications(jobId, member.organizationId) : Promise.resolve([]),
     needsInternalMatches
       ? getJobMatches(jobId, member.organizationId, { cursor })
       : Promise.resolve({ items: [], total: 0, nextCursor: undefined as string | undefined, rematchQueued: false }),
-    needsActivities ? getJobActivities(jobId, member.organizationId) : Promise.resolve([]),
+    needsMatchBuckets
+      ? getJobMatchScoreBuckets(jobId, member.organizationId)
+      : Promise.resolve({ total: 0, high: 0, medium: 0, low: 0, goodMatchPercent: 0 }),
+    needsActivities
+      ? getJobActivitiesWithActors(jobId, member.organizationId)
+      : Promise.resolve([]),
     tab === "email" ? getEmailCampaignStats(jobId, member.organizationId) : Promise.resolve(null),
     needsClients ? listClients(member.organizationId) : Promise.resolve([]),
-    needsEmail ? getGmailConnection(session.user.id) : Promise.resolve(null),
+    needsEmail ? resolveOrgGmailSender(member.organizationId, session.user.id) : Promise.resolve(null),
+    needsEmail ? getOutreachPoolSummary(member.organizationId) : Promise.resolve(null),
     needsAnalytics ? getJobAnalytics(jobId, member.organizationId) : Promise.resolve(null),
+    needsMembers ? getOrgMembers(member.organizationId) : Promise.resolve([]),
+    needsNotes ? listJobNotes(jobId, member.organizationId) : Promise.resolve([]),
+    needsDocuments ? listJobDocuments(jobId, member.organizationId) : Promise.resolve([]),
   ]);
 
   let emailTemplates: Awaited<ReturnType<typeof listEmailTemplates>> = [];
@@ -98,159 +146,147 @@ export default async function JobDetailPage({
       : []);
   const certifications = requirements.certifications ?? [];
   const experienceYears = requirements.experienceYears ?? job.experienceMin ?? undefined;
-  const salaryMin = job.salaryMin != null ? Number(job.salaryMin) : undefined;
-  const salaryMax = job.salaryMax != null ? Number(job.salaryMax) : undefined;
   const salaryPeriod = getSalaryPeriodFromMetadata(job.metadata);
   const jobLocation = formatJobLocation(job);
   const jobSalary = formatJobSalary(getJobSalaryFields(job));
   const applyUrl = getJobReferralUrl(job);
 
-  const tabs = [
-    { key: "overview", label: "Overview" },
-    { key: "applicants", label: "Applicants" },
-    { key: "matching", label: "Matching" },
-    { key: "pipeline", label: "Pipeline" },
-    { key: "analytics", label: "Analytics" },
-    { key: "email", label: "Email Performance" },
-    { key: "activity", label: "Activity" },
-    { key: "edit", label: "Edit" },
-  ];
+  const membersForForm = orgMembers.map((m) => ({
+    id: m.user.id,
+    name: m.user.name || m.user.email || "Member",
+  }));
+
+  const inReview = applications.filter((a) =>
+    ["APPLYING", "INTERVIEW_COMPLETED"].includes(a.stage),
+  ).length;
+  const shortlisted = applications.filter((a) =>
+    ["MCC", "CERTIFIED", "MATCHED_TO_PROJECT"].includes(a.stage),
+  ).length;
+  const hired = applications.filter((a) => a.stage === "PLACEMENT").length;
+  const totalApplicants = applications.length || job._count.applications;
+
+  const postedDate = resolveJobDisplayDate(job) ?? job.createdAt;
+  const postedLabel = postedDate.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+
+  const experienceLevel = (() => {
+    if (job.experienceMin != null && job.experienceMax != null) {
+      return `${job.experienceMin} - ${job.experienceMax} years`;
+    }
+    if (job.experienceMin != null) return `${job.experienceMin}+ years`;
+    if (experienceYears != null) return `${experienceYears}+ years`;
+    return "—";
+  })();
+
+  const employmentLabel = job.employmentType
+    ? job.employmentType.replaceAll("_", " ")
+    : "—";
+  const workplaceSuffix = job.workplaceType
+    ? ` (${job.workplaceType.replaceAll("_", " ")})`
+    : "";
+  const locationWithWorkplace =
+    jobLocation && jobLocation !== "—"
+      ? `${jobLocation}${workplaceSuffix}`
+      : workplaceSuffix.trim() || "—";
+
+  const salaryDisplay =
+    jobSalary === "Competitive" ? "Not Disclosed" : jobSalary;
+
+  const pipelineApps = applications.map((a) => ({
+    id: a.id,
+    stage: a.stage,
+    candidateName: `${a.candidate.firstName} ${a.candidate.lastName}`,
+    currentRole: a.candidate.currentRole,
+    location: candidateLocation(a.candidate),
+    updatedLabel: formatDistanceToNow(a.updatedAt, { addSuffix: true }),
+  }));
 
   return (
-    <div>
-      <PageHeader
+    <div className="space-y-6 pb-8">
+      <JobDetailHeader
+        jobId={jobId}
         title={job.title}
-        description={`${job.jobCode} · ${job.client.name} · ${jobLocation}`}
-        actions={
-          <div className="flex items-center gap-2">
-            {tab !== "edit" && (
-              <Button asChild size="sm" variant="outline">
-                <Link href={`/jobs/${jobId}?tab=edit`}>Edit</Link>
-              </Button>
-            )}
-            <StatusBadge status={job.status} />
-          </div>
-        }
+        status={job.status}
+        jobCode={job.jobCode}
+        clientId={job.clientId}
+        clientName={job.client.name}
+        location={locationWithWorkplace}
+        employmentType={job.employmentType}
+        postedLabel={postedLabel}
+        shareUrl={applyUrl}
+        activeTab={tab === "email" ? "analytics" : tab}
       />
 
-      <div className="flex gap-1 border-b border-border mb-6 overflow-x-auto">
-        {tabs.map((t) => (
-          <Link
-            key={t.key}
-            href={`/jobs/${jobId}?tab=${t.key}`}
-            className={`px-4 py-2 text-sm whitespace-nowrap border-b-2 -mb-px transition-colors ${
-              tab === t.key
-                ? "border-brand-700 text-brand-700 font-medium"
-                : "border-transparent text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            {t.label}
-          </Link>
-        ))}
-      </div>
-
       {tab === "overview" && (
-        <Card className="max-w-3xl">
-          <CardHeader><CardTitle className="text-sm">Job Details</CardTitle></CardHeader>
-          <CardContent className="space-y-4 text-sm">
-            <div className="grid grid-cols-2 gap-x-6 gap-y-3">
-              <div>
-                <div><span className="text-muted-foreground">Location:</span> {jobLocation}</div>
-                <div><span className="text-muted-foreground">Salary:</span> {jobSalary}</div>
-              </div>
-              <div>
-                <div><span className="text-muted-foreground">Openings:</span> {job.openings}</div>
-                {experienceYears != null && (
-                  <div><span className="text-muted-foreground">Experience:</span> {experienceYears}+ years</div>
-                )}
-              </div>
-              <div>
-                <div>
-                  <span className="text-muted-foreground">Applicants:</span>{" "}
-                  <Link href={`/jobs/${jobId}?tab=applicants`} className="text-brand-700 hover:underline font-medium">
-                    {job._count.applications}
-                  </Link>
-                </div>
-              </div>
-              <div>
-                <div>
-                  <span className="text-muted-foreground">Matches:</span>{" "}
-                  <Link href={`/jobs/${jobId}?tab=matching`} className="text-brand-700 hover:underline font-medium">
-                    {job._count.matches}
-                  </Link>
-                </div>
-                {resolveJobDisplayDate(job) && (
-                  <div>
-                    <span className="text-muted-foreground">Posted:</span>{" "}
-                    {formatJobTimestamp(resolveJobDisplayDate(job))}
-                  </div>
-                )}
-              </div>
-            </div>
-            <JobDescriptionView
-              description={job.description}
-              responsibilities={job.responsibilities}
-              requirementsText={job.requirementsText}
-              preferredQualifications={job.preferredQualifications}
-              skills={jobSkills}
-            />
-            <Card className="border-border/80">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm">Boolean Search</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <form id="job-boolean-form" action={updateJobBooleanAction.bind(null, jobId)} className="space-y-3">
-                  <BooleanSearchEditor
-                    defaultValue={job.booleanSearch}
-                    jobId={jobId}
-                    rows={12}
-                  />
-                  <Button type="submit" size="sm">
-                    Save Boolean
-                  </Button>
-                </form>
-              </CardContent>
-            </Card>
-            {job.autoEmailEnabled && (
-              <div className="rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-sm text-brand-900">
-                Auto-email outreach is enabled
-                {job.autoEmailMinScore ? ` for matches ≥ ${job.autoEmailMinScore}%` : ""}.
-              </div>
-            )}
-            <ReferralLinkCopy url={applyUrl} />
-            <div className="border-t border-border pt-4">
-              <SaveJobTemplateForm jobId={jobId} />
-            </div>
-          </CardContent>
-        </Card>
+        <JobOverviewPanel
+          jobId={jobId}
+          details={{
+            jobId: job.id,
+            department: job.department?.trim() || "—",
+            experienceLevel,
+            salaryRange: salaryDisplay,
+            employmentType: employmentLabel,
+            location: locationWithWorkplace,
+            openings: job.openings,
+            postedOn: postedLabel,
+          }}
+          description={job.description}
+          responsibilities={job.responsibilities}
+          requirementsText={job.requirementsText}
+          preferredQualifications={job.preferredQualifications}
+          skills={jobSkills}
+          candidates={{
+            total: totalApplicants,
+            inReview,
+            shortlisted,
+            hired,
+          }}
+          matches={matchBuckets}
+          activities={activities}
+        />
       )}
 
       {tab === "email" && emailStats && (
         <div className="space-y-4">
           <Card className="max-w-lg">
-            <CardHeader><CardTitle className="text-sm">Email Performance</CardTitle></CardHeader>
+            <CardHeader>
+              <CardTitle className="text-sm">Email Performance</CardTitle>
+            </CardHeader>
             <CardContent className="grid grid-cols-2 gap-4 text-sm">
-              <div><span className="text-muted-foreground">Sent:</span> {emailStats.sent}</div>
-              <div><span className="text-muted-foreground">Delivered:</span> {emailStats.delivered}</div>
-              <div><span className="text-muted-foreground">Opened:</span> {emailStats.opened}</div>
-              <div><span className="text-muted-foreground">Clicked:</span> {emailStats.clicked}</div>
-              <div><span className="text-muted-foreground">Replied:</span> {emailStats.replied}</div>
+              <div>
+                <span className="text-muted-foreground">Sent:</span> {emailStats.sent}
+              </div>
+              <div>
+                <span className="text-muted-foreground">Delivered:</span> {emailStats.delivered}
+              </div>
+              <div>
+                <span className="text-muted-foreground">Opened:</span> {emailStats.opened}
+              </div>
+              <div>
+                <span className="text-muted-foreground">Clicked:</span> {emailStats.clicked}
+              </div>
+              <div>
+                <span className="text-muted-foreground">Replied:</span> {emailStats.replied}
+              </div>
             </CardContent>
           </Card>
           {emailStats.recent && emailStats.recent.length > 0 && (
             <Card>
-              <CardHeader><CardTitle className="text-sm">Sent Emails</CardTitle></CardHeader>
+              <CardHeader>
+                <CardTitle className="text-sm">Sent Emails</CardTitle>
+              </CardHeader>
               <CardContent className="divide-y">
                 {emailStats.recent.map((msg) => (
-                  <div key={msg.id} className="py-3 flex items-start justify-between gap-4">
+                  <div key={msg.id} className="flex items-start justify-between gap-4 py-3">
                     <div>
                       <div className="text-sm font-medium">{msg.recipientName || msg.recipientEmail}</div>
                       <div className="text-xs text-muted-foreground">{msg.subject}</div>
-                      {msg.autoSent && (
-                        <span className="text-[10px] text-brand-700">Auto-sent</span>
-                      )}
+                      {msg.autoSent && <span className="text-[10px] text-brand-700">Auto-sent</span>}
                     </div>
-                    <div className="text-xs text-muted-foreground text-right shrink-0">
+                    <div className="shrink-0 text-right text-xs text-muted-foreground">
                       {msg.sentAt ? formatDistanceToNow(msg.sentAt, { addSuffix: true }) : "—"}
                       {msg.openedAt && <div>Opened {formatDistanceToNow(msg.openedAt, { addSuffix: true })}</div>}
                     </div>
@@ -269,88 +305,103 @@ export default async function JobDetailPage({
           {matchingChannel === "linkedin" ? (
             <LinkedInMatchesPanel jobId={jobId} hasBoolean={Boolean(job.booleanSearch?.trim())} />
           ) : (
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between gap-4 space-y-0">
-            <div>
-              <CardTitle className="text-sm">Matching Candidates</CardTitle>
-              <p className="text-xs text-muted-foreground mt-1">
-                  Remaining pool — showing {matches.items.length}
-                  {matches.total > matches.items.length ? ` of ${matches.total}` : ""} candidates.
-                  Matches are based on Boolean search and location only. Strong+ matches (70+) are eligible for Email all. Emailed matches move to Applicants.
-              </p>
-              {matches.rematchQueued ? (
-                <p className="text-xs text-amber-700 mt-2">
-                  Refreshing this list with Boolean + location only. Reload in a minute to see updated scores.
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between gap-4 space-y-0">
+                <div>
+                  <CardTitle className="text-sm">Matching Candidates</CardTitle>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Remaining pool — showing {matches.items.length}
+                    {matches.total > matches.items.length ? ` of ${matches.total}` : ""} candidates. Matches are based
+                    on Boolean search only. Strong+ matches (70+) are eligible for Email all. Emailed
+                    matches move to Applicants.
+                  </p>
+                  {matches.rematchQueued ? (
+                    <p className="mt-2 text-xs text-amber-700">
+                      Refreshing this list with Boolean search only. Reload in a minute to see updated scores.
+                    </p>
+                  ) : null}
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <MatchingRematchButton jobId={jobId} jobTitle={job.title} />
+                  {matches.total > 0 && (
+                    <MatchBulkEmail
+                      jobId={jobId}
+                      remainingCount={matches.total}
+                      jobTitle={job.title}
+                      jobCode={job.jobCode}
+                      clientName={job.client.name}
+                      jobLocation={jobLocation}
+                      jobSalary={jobSalary}
+                      applyLink={applyUrl}
+                      recruiterName={session.user.name ?? "Recruiter"}
+                      templates={emailTemplates}
+                      gmailConnected={(outreach?.mailboxCount ?? 0) > 0}
+                      userEmail={
+                        (outreach?.mailboxCount ?? 0) > 0
+                          ? `${outreach!.mailboxCount} outreach account${outreach!.mailboxCount === 1 ? "" : "s"} · ${outreach!.remainingToday.toLocaleString()} remaining today`
+                          : gmail?.email
+                      }
+                    />
+                  )}
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-sm text-muted-foreground">
+                  <span className="font-medium text-foreground">{jobLocation}</span>
+                  {" · "}
+                  <span className="font-medium text-foreground">{jobSalary}</span>
                 </p>
-              ) : null}
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <MatchingRematchButton jobId={jobId} jobTitle={job.title} />
-            {matches.total > 0 && (
-              <MatchBulkEmail
-              jobId={jobId}
-              remainingCount={matches.total}
-              jobTitle={job.title}
-              jobCode={job.jobCode}
-              clientName={job.client.name}
-              jobLocation={jobLocation}
-              jobSalary={jobSalary}
-              applyLink={applyUrl}
-              recruiterName={session.user.name ?? "Recruiter"}
-              templates={emailTemplates}
-              gmailConnected={!!gmail}
-              userEmail={gmail?.email}
-            />
-            )}
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <p className="text-sm text-muted-foreground">
-              <span className="font-medium text-foreground">{jobLocation}</span>
-              {" · "}
-              <span className="font-medium text-foreground">{jobSalary}</span>
-            </p>
-            <div className="space-y-3">
-              {matches.items.length === 0 ? (
-                <EmptyState
-                  title="No remaining matches"
-                  description="Potential matches (score 60+) appear here after rematch. Emailed candidates move to Applicants."
-                />
-              ) : (
-                matches.items.map((m) => (
-                    <div key={m.id} className="flex items-center justify-between rounded-lg border p-3 gap-3">
-                      <div className="min-w-0">
-                        <Link
-                          href={`/candidates/${m.candidateId}`}
-                          className="font-medium text-sm text-brand-700 hover:underline"
-                        >
-                          {m.candidate.firstName} {m.candidate.lastName}
-                        </Link>
-                        <div className="text-xs text-muted-foreground">{m.candidate.currentRole}</div>
-                        <MatchWhySummary
-                          data={{
-                            matchStatus: m.matchStatus,
-                            confidence: m.confidence,
-                            requirementBreakdown: (m.requirementBreakdown ?? null) as MatchWhyData["requirementBreakdown"],
-                          }}
-                        />
-                        <MatchAnalysisPanel
-                          jobId={jobId}
-                          candidateId={m.candidateId}
-                          candidateName={`${m.candidate.firstName} ${m.candidate.lastName}`}
-                        />
-                      </div>
-                      <div className="text-right shrink-0 flex flex-col items-end gap-2">
-                        <MatchScoreBadge score={m.score} status={m.matchStatus} />
-                        {hasBooleanLocationBreakdown(
-                          (m.requirementBreakdown ?? null) as MatchWhyData["requirementBreakdown"],
-                        ) ? (
-                          <div className="text-[10px] text-muted-foreground">
-                            Boolean {m.skillsMatch}% · Location {m.descriptionMatch}%
+                <div className="space-y-3">
+                  {matches.items.length === 0 ? (
+                    <EmptyState
+                      title="No remaining matches"
+                      description="Potential matches (score 60+) appear here after rematch. Emailed candidates move to Applicants."
+                    />
+                  ) : (
+                    matches.items.map((m) => (
+                      <div key={m.id} className="flex items-start justify-between gap-3 rounded-lg border p-3">
+                        <div className="min-w-0">
+                          <Link
+                            href={`/candidates/${m.candidateId}`}
+                            className="text-sm font-medium text-brand-700 hover:underline"
+                          >
+                            {m.candidate.firstName} {m.candidate.lastName}
+                          </Link>
+                          <div className="text-xs text-muted-foreground">{m.candidate.currentRole}</div>
+                          <MatchWhySummary
+                            data={{
+                              matchStatus: m.matchStatus,
+                              confidence: m.confidence,
+                              requirementBreakdown: (m.requirementBreakdown ??
+                                null) as MatchWhyData["requirementBreakdown"],
+                            }}
+                          />
+                          <MatchAnalysisPanel
+                            jobId={jobId}
+                            candidateId={m.candidateId}
+                            candidateName={`${m.candidate.firstName} ${m.candidate.lastName}`}
+                          />
+                        </div>
+                        <div className="flex shrink-0 flex-col items-end gap-2 text-right">
+                          <div className="flex items-start gap-1">
+                            <MatchScoreBadge score={m.score} status={m.matchStatus} />
+                            <DismissMatchButton
+                              jobId={jobId}
+                              candidateId={m.candidateId}
+                              candidateName={`${m.candidate.firstName} ${m.candidate.lastName}`.trim()}
+                            />
                           </div>
-                        ) : (
-                          <div className="text-[10px] text-muted-foreground">Rematch to refresh Boolean + location score</div>
-                        )}
+                          {hasBooleanLocationBreakdown(
+                            (m.requirementBreakdown ?? null) as MatchWhyData["requirementBreakdown"],
+                          ) ? (
+                            <div className="text-[10px] text-muted-foreground">
+                              Boolean {m.skillsMatch}%
+                            </div>
+                          ) : (
+                            <div className="text-[10px] text-muted-foreground">
+                              Rematch to refresh Boolean score
+                            </div>
+                          )}
                           <div className="flex gap-2">
                             <MatchCandidateEmail
                               jobId={jobId}
@@ -365,56 +416,55 @@ export default async function JobDetailPage({
                               applyLink={applyUrl}
                               recruiterName={session.user.name ?? "Recruiter"}
                               templates={emailTemplates}
-                              gmailConnected={!!gmail}
-                              userEmail={gmail?.email}
+                              gmailConnected={!!gmail || (outreach?.mailboxCount ?? 0) > 0}
+                              userEmail={
+                                (outreach?.mailboxCount ?? 0) > 0
+                                  ? `${outreach!.mailboxCount} outreach account${outreach!.mailboxCount === 1 ? "" : "s"}`
+                                  : gmail?.email
+                              }
                             />
                             <form action={addCandidateToJobAction.bind(null, jobId, m.candidateId)}>
-                              <Button type="submit" size="sm" variant="outline">Add to job</Button>
+                              <Button type="submit" size="sm" variant="outline">
+                                Add to job
+                              </Button>
                             </form>
                           </div>
+                        </div>
                       </div>
-                    </div>
-                ))
-              )}
-            </div>
-            <CursorPagination
-              nextCursor={matches.nextCursor}
-              basePath={`/jobs/${jobId}`}
-              searchParams={{ tab: "matching", channel: "internal", cursor }}
-              pageSize={50}
-              total={matches.total}
-              shown={matches.items.length}
-            />
-          </CardContent>
-        </Card>
+                    ))
+                  )}
+                </div>
+                <CursorPagination
+                  nextCursor={matches.nextCursor}
+                  basePath={`/jobs/${jobId}`}
+                  searchParams={{ tab: "matching", channel: "internal", cursor }}
+                  pageSize={50}
+                  total={matches.total}
+                  shown={matches.items.length}
+                />
+              </CardContent>
+            </Card>
           )}
         </div>
       )}
 
-      {tab === "pipeline" && (
-        <PipelineKanban
-          jobId={jobId}
-          applications={applications.map((a) => ({
-            id: a.id,
-            stage: a.stage,
-            candidateName: `${a.candidate.firstName} ${a.candidate.lastName}`,
-            currentRole: a.candidate.currentRole,
-          }))}
-        />
-      )}
+      {tab === "pipeline" && <PipelineKanban jobId={jobId} applications={pipelineApps} />}
 
       {tab === "analytics" && jobAnalytics && <JobAnalyticsPanel analytics={jobAnalytics} />}
 
       {tab === "activity" && (
         <Card>
-          <CardContent className="pt-6 space-y-3">
+          <CardContent className="space-y-3 pt-6">
             {activities.length === 0 ? (
               <EmptyState title="No activity yet" description="Job events will appear here" />
             ) : (
               activities.map((a) => (
-                <div key={a.id} className="text-sm border-b pb-2">
-                  <span className="font-medium">{a.action}</span>
-                  <span className="text-muted-foreground ml-2">
+                <div key={a.id} className="border-b pb-2 text-sm">
+                  <span className="font-medium">
+                    {a.actor?.name ? `${a.actor.name} · ` : ""}
+                    {formatActivityAction(a.action, a.metadata)}
+                  </span>
+                  <span className="ml-2 text-muted-foreground">
                     {formatDistanceToNow(a.createdAt, { addSuffix: true })}
                   </span>
                 </div>
@@ -424,166 +474,27 @@ export default async function JobDetailPage({
         </Card>
       )}
 
+      {tab === "notes" && <JobNotesPanel jobId={jobId} notes={notes} />}
+
+      {tab === "documents" && <JobDocumentsPanel documents={documents} />}
+
       {tab === "edit" && (
-        <Card className="max-w-2xl">
-          <CardHeader><CardTitle className="text-sm">Edit Job</CardTitle></CardHeader>
+        <Card className="max-w-3xl">
+          <CardHeader>
+            <CardTitle className="text-sm">Edit Job</CardTitle>
+          </CardHeader>
           <CardContent>
-            <form
-              key={job.updatedAt.toISOString()}
-              action={async (fd) => {
-              "use server";
-              const { updateJobAction } = await import("@/app/actions");
-              await updateJobAction(jobId, fd);
-            }} className="space-y-4">
-              <div>
-                <Label htmlFor="clientId">Client</Label>
-                <select
-                  id="clientId"
-                  name="clientId"
-                  required
-                  defaultValue={job.clientId}
-                  className="mt-1 flex h-10 w-full rounded-lg border border-input bg-card px-3 text-sm"
-                >
-                  {clients.map((c) => (
-                    <option key={c.id} value={c.id}>{c.name} ({c.prefix})</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <Label htmlFor="status">Status</Label>
-                <select
-                  id="status"
-                  name="status"
-                  defaultValue={job.status}
-                  className="mt-1 flex h-10 w-full rounded-lg border border-input bg-card px-3 text-sm"
-                >
-                  <option value="OPEN">Open</option>
-                  <option value="ON_HOLD">On Hold</option>
-                  <option value="CLOSED">Closed</option>
-                  <option value="FILLED">Filled</option>
-                </select>
-              </div>
-              <div>
-                <Label htmlFor="title">Job Title</Label>
-                <Input id="title" name="title" defaultValue={job.title} required className="mt-1" />
-              </div>
-              <div>
-                <Label htmlFor="jobCode">Job ID</Label>
-                <Input id="jobCode" name="jobCode" defaultValue={job.jobCode} required className="mt-1" />
-              </div>
-              <div>
-                <Label htmlFor="description">Job Description</Label>
-                <textarea
-                  id="description"
-                  name="description"
-                  rows={4}
-                  defaultValue={job.description ?? ""}
-                  className="mt-1 flex w-full rounded-lg border border-input bg-card px-3 py-2 text-sm"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <Label htmlFor="location">Location</Label>
-                  <Input id="location" name="location" defaultValue={job.location ?? ""} className="mt-1" />
-                </div>
-                <div>
-                  <Label htmlFor="country">Country</Label>
-                  <CountrySelect
-                    id="country"
-                    name="country"
-                    defaultValue={job.country ?? ""}
-                    className="mt-1"
-                  />
-                </div>
-              </div>
-              <div>
-                <Label htmlFor="openings">Openings</Label>
-                <Input id="openings" name="openings" type="number" min={1} defaultValue={job.openings} className="mt-1" />
-              </div>
-              <div className="grid grid-cols-2 items-end gap-4 lg:grid-cols-4">
-                <div>
-                  <Label htmlFor="salaryMin">Salary (min)</Label>
-                  <Input
-                    id="salaryMin"
-                    name="salaryMin"
-                    type="number"
-                    min={0}
-                    step="1000"
-                    defaultValue={salaryMin ?? ""}
-                    className="mt-1"
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="salaryMax">Salary (max)</Label>
-                  <Input
-                    id="salaryMax"
-                    name="salaryMax"
-                    type="number"
-                    min={0}
-                    step="1000"
-                    defaultValue={salaryMax ?? ""}
-                    className="mt-1"
-                  />
-                </div>
-                <div>
-                  <select
-                    id="salaryPeriod"
-                    name="salaryPeriod"
-                    defaultValue={salaryPeriod}
-                    aria-label="Salary period"
-                    className="flex h-10 w-full rounded-lg border border-input bg-card px-3 text-sm"
-                  >
-                    {SALARY_PERIODS.map((period) => (
-                      <option key={period.value} value={period.value}>
-                        {period.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <Label htmlFor="salaryCurrency">Currency</Label>
-                  <Input
-                    id="salaryCurrency"
-                    name="salaryCurrency"
-                    defaultValue={job.salaryCurrency ?? "USD"}
-                    className="mt-1"
-                  />
-                </div>
-              </div>
-              <div>
-                <Label htmlFor="preferredSkills">Preferred Skills (comma-separated)</Label>
-                <Input
-                  id="preferredSkills"
-                  name="preferredSkills"
-                  defaultValue={preferredSkills.join(", ")}
-                  className="mt-1"
-                />
-              </div>
-              <div>
-                <Label htmlFor="requiredSkills">Required Skills (comma-separated)</Label>
-                <Input id="requiredSkills" name="requiredSkills" defaultValue={jobSkills.join(", ")} className="mt-1" />
-              </div>
-              <div>
-                <Label htmlFor="certifications">Certifications (comma-separated)</Label>
-                <Input
-                  id="certifications"
-                  name="certifications"
-                  defaultValue={certifications.join(", ")}
-                  placeholder="AWS Solutions Architect, PMP"
-                  className="mt-1"
-                />
-              </div>
-              <div>
-                <Label htmlFor="experienceYears">Experience (years)</Label>
-                <Input
-                  id="experienceYears"
-                  name="experienceYears"
-                  type="number"
-                  min={0}
-                  defaultValue={experienceYears ?? ""}
-                  className="mt-1"
-                />
-              </div>
+            <JobDetailForm
+              jobId={jobId}
+              job={job}
+              clients={clients}
+              members={membersForForm}
+              salaryPeriod={salaryPeriod}
+              requiredSkills={jobSkills.join(", ")}
+              preferredSkills={preferredSkills.join(", ")}
+              certifications={certifications.join(", ")}
+              experienceYears={experienceYears}
+            >
               <BooleanSearchEditor
                 defaultValue={job.booleanSearch}
                 jobId={jobId}
@@ -594,7 +505,7 @@ export default async function JobDetailPage({
                 certificationsInputId="certifications"
               />
               {job.booleanSearchUpdatedAt && (
-                <p className="text-xs text-muted-foreground -mt-2">
+                <p className="-mt-2 text-xs text-muted-foreground">
                   Last updated {formatDistanceToNow(job.booleanSearchUpdatedAt, { addSuffix: true })}
                 </p>
               )}
@@ -608,16 +519,17 @@ export default async function JobDetailPage({
                   defaultValue={job.referralLink ?? ""}
                   className="mt-1"
                 />
-                <p className="text-xs text-muted-foreground mt-1">
+                <p className="mt-1 text-xs text-muted-foreground">
                   Leave blank to use the default apply link: {applyUrl}
                 </p>
               </div>
 
-              <div className="rounded-lg border border-border/80 p-4 space-y-4">
+              <div className="space-y-4 rounded-lg border border-border/80 p-4">
                 <div>
                   <div className="text-sm font-medium">Auto Email Outreach</div>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    When enabled, matched candidates above the minimum score receive the selected template automatically after matching or Gmail import.
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    When enabled, matched candidates above the minimum score receive the selected template
+                    automatically after matching or Gmail import.
                   </p>
                 </div>
                 <label className="flex items-center gap-2 text-sm">
@@ -641,7 +553,8 @@ export default async function JobDetailPage({
                       <option value="">Select template</option>
                       {emailTemplates.map((tpl) => (
                         <option key={tpl.id} value={tpl.id}>
-                          {tpl.name}{tpl.jobId ? "" : " (org-wide)"}
+                          {tpl.name}
+                          {tpl.jobId ? "" : " (org-wide)"}
                         </option>
                       ))}
                     </select>
@@ -666,26 +579,37 @@ export default async function JobDetailPage({
                   Posted {formatJobTimestamp(resolveJobDisplayDate(job))}
                 </p>
               )}
-
-              <Button type="submit">Save Changes</Button>
-            </form>
+              <ReferralLinkCopy url={applyUrl} />
+              <SaveJobTemplateForm jobId={jobId} />
+            </JobDetailForm>
           </CardContent>
         </Card>
       )}
 
       {tab === "applicants" && (
         <Card>
-          <CardHeader><CardTitle className="text-sm">Applicants</CardTitle></CardHeader>
+          <CardHeader>
+            <CardTitle className="text-sm">Applicants</CardTitle>
+          </CardHeader>
           <CardContent>
             {applications.length === 0 ? (
-              <EmptyState title="No applicants yet" description="Add candidates from the Matching tab or upload resumes" />
+              <EmptyState
+                title="No applicants yet"
+                description="Add candidates from the Matching tab or upload resumes"
+              />
             ) : (
               <div className="space-y-2">
                 {applications.map((a) => (
                   <div key={a.id} className="flex items-center justify-between rounded-lg border p-3">
-                    <Link href={`/candidates/${a.candidateId}`} className="text-sm font-medium hover:text-brand-700">
-                      {a.candidate.firstName} {a.candidate.lastName}
-                    </Link>
+                    <div>
+                      <Link href={`/candidates/${a.candidateId}`} className="text-sm font-medium hover:text-brand-700">
+                        {a.candidate.firstName} {a.candidate.lastName}
+                      </Link>
+                      <div className="text-xs text-muted-foreground">
+                        {candidateLocation(a.candidate) || "Location TBD"} ·{" "}
+                        {formatDistanceToNow(a.updatedAt, { addSuffix: true })}
+                      </div>
+                    </div>
                     <div className="flex items-center gap-2">
                       <span className="text-xs text-muted-foreground">{a.candidate.email}</span>
                       <StageBadge stage={a.stage} />
@@ -697,7 +621,6 @@ export default async function JobDetailPage({
           </CardContent>
         </Card>
       )}
-
     </div>
   );
 }

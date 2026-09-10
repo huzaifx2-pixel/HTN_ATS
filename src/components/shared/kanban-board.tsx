@@ -29,6 +29,8 @@ interface KanbanItem {
   id: string;
   candidateName: string;
   currentRole?: string | null;
+  location?: string | null;
+  updatedLabel?: string | null;
   score?: number;
 }
 
@@ -61,6 +63,12 @@ function SortableCard({ item }: { item: KanbanItem }) {
           <div className="text-xs font-medium truncate">{item.candidateName}</div>
           {item.currentRole && (
             <div className="text-[10px] text-muted-foreground truncate">{item.currentRole}</div>
+          )}
+          {item.location && (
+            <div className="text-[10px] text-muted-foreground truncate">{item.location}</div>
+          )}
+          {item.updatedLabel && (
+            <div className="text-[10px] text-muted-foreground/80">{item.updatedLabel}</div>
           )}
         </div>
         {item.score !== undefined && <MatchScoreBadge score={item.score} />}

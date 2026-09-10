@@ -2,7 +2,7 @@ import { prisma } from "@/lib/db";
 import { applyMergeFields } from "@/lib/constants/email";
 import { formatEmailBodyHtml } from "@/lib/email-body-html";
 import { getAppBaseUrl } from "@/lib/runtime/app-url";
-import { sendEmailAsUser } from "@/lib/services/gmail-service";
+import { sendEmailAsOrg } from "@/lib/services/gmail-service";
 import { blockedMarketingEmails } from "@/lib/services/contact-compliance-service";
 import type { ImportedContactMeta } from "@/lib/marketing/types";
 import { updateCampaignStats } from "@/lib/services/marketing-campaign-service";
@@ -118,7 +118,8 @@ export async function sendMarketingCampaign(
       html = embedTrackingPixel(formatEmailBodyHtml(html), recipient.trackingId);
 
       try {
-        await sendEmailAsUser(
+        await sendEmailAsOrg(
+          organizationId,
           userId,
           recipient.email,
           applyMergeFields(campaign.subject!, mergeData),
@@ -164,5 +165,5 @@ export async function sendMarketingTestEmail(
   input: { to: string; subject: string; htmlContent: string },
 ) {
   const html = embedTrackingPixel(formatEmailBodyHtml(input.htmlContent), "test");
-  await sendEmailAsUser(userId, input.to, `[TEST] ${input.subject}`, html);
+  await sendEmailAsOrg(organizationId, userId, input.to, `[TEST] ${input.subject}`, html);
 }

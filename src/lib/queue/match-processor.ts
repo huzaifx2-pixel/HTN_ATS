@@ -16,6 +16,8 @@ type ClaimedWork = {
 };
 
 async function claimWork(limit: number): Promise<ClaimedWork[]> {
+  // MatchWorkItem.runAfter is timestamp without time zone, stored as UTC wall-clock
+  // by Prisma. Compare against UTC now so EST/EDT sessions don't treat UTC times as local.
   return prisma.$queryRaw<ClaimedWork[]>`
     UPDATE "MatchWorkItem"
     SET
@@ -25,7 +27,7 @@ async function claimWork(limit: number): Promise<ClaimedWork[]> {
     WHERE id IN (
       SELECT id FROM "MatchWorkItem"
       WHERE status = 'PENDING'
-        AND "runAfter" <= CURRENT_TIMESTAMP
+        AND "runAfter" <= (NOW() AT TIME ZONE 'UTC')
       ORDER BY "createdAt" ASC
       LIMIT ${limit}
       FOR UPDATE SKIP LOCKED

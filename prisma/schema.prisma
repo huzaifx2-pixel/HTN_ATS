@@ -25,12 +25,17 @@ model User {
   invitations   Invitation[]
 
   ownedJobs     Job[]              @relation("JobOwner")
+  jobNotes      JobNote[]          @relation("JobNoteAuthor")
   stageChanges  StageHistory[]
   sentMessages  Message[]
   channelMembers ChannelMember[]
   notifications Notification[]
   auditLogs     AuditLog[]
   gmailConnections GmailConnection[]
+  outreachMailboxes OutreachMailbox[]
+  micro1ImportBatches Micro1ReferralImportBatch[] @relation("Micro1ImportUploader")
+  micro1ReferralLinks Micro1Referral[] @relation("Micro1ReferralLinkedBy")
+  micro1MatchAudits Micro1MatchAudit[] @relation("Micro1MatchActor")
 }
 
 model Session {
@@ -110,11 +115,18 @@ model Organization {
   resumeImportBatches ResumeImportBatch[]
   linkedInJobMatches LinkedInJobMatch[]
   emailSendQueue EmailSendQueue[]
+  outreachMailboxes OutreachMailbox[]
   knowledgeDocuments KnowledgeDocument[]
   candidateHotlists  CandidateHotlist[]
   crmContacts        CrmContact[]
   opportunities      Opportunity[]
   employers          Employer[]
+  jobNotes           JobNote[]
+  micro1Referrals    Micro1Referral[]
+  micro1ReferralImportBatches Micro1ReferralImportBatch[]
+  micro1NameLinks    Micro1NameLink[]
+  micro1MatchAudits  Micro1MatchAudit[]
+  roleFeatures       RoleFeature[]
 }
 
 model Member {
@@ -146,6 +158,19 @@ model Invitation {
   @@index([organizationId])
 }
 
+model RoleFeature {
+  id             String     @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  role           MemberRole
+  feature        String
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  @@unique([organizationId, role, feature])
+  @@index([organizationId, role])
+}
+
 enum MemberRole {
   OWNER
   ADMIN
@@ -154,6 +179,7 @@ enum MemberRole {
   MARKETING
   FINANCE
   VIEWER
+  EXTERNAL_RECRUITER
 }
 
 enum InvitationStatus {
@@ -198,7 +224,16 @@ enum JobSource {
   WORKDAY
   LINKEDIN
   MANUAL
+  CSV
   OTHER
+}
+
+enum JobImportBatchStatus {
+  PREVIEW
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
 }
 
 enum CandidateStatus {
@@ -276,6 +311,13 @@ enum JobStatus {
   FILLED
 }
 
+enum JobPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
 model Job {
   id                      String           @id @default(cuid())
   organizationId          String
@@ -300,25 +342,50 @@ model Job {
   employmentType          EmploymentType?
   workplaceType           WorkplaceType?
   department              String?
+  jobFunction             String?
   seniority               String?
+  priority                JobPriority      @default(MEDIUM)
   experienceMin           Int?
   experienceMax           Int?
   salaryMin               Decimal?
   salaryMax               Decimal?
   salaryCurrency          String?
+  billRateMin             Decimal?
+  billRateMax             Decimal?
+  payRateMin              Decimal?
+  payRateMax              Decimal?
+  ratePeriod              String?
   location                String?
   country                 String?
   city                    String?
+  state                   String?
+  zip                     String?
+  address1                String?
+  address2                String?
   timezone                String?
   remote                  Boolean?
   referralLink            String?
+  referralKey             String?
   applyUrl                String?
   canonicalUrl            String?
   requirements            Json?
   openings                Int              @default(1)
+  maxSubmissions          Int?
   status                  JobStatus        @default(OPEN)
+  startDate               DateTime?
+  endDate                 DateTime?
+  requireResume           Boolean          @default(true)
+  travelRequired          Boolean          @default(false)
+  otRequired              Boolean          @default(false)
+  referencesRequired      Boolean          @default(false)
+  drugTestRequired        Boolean          @default(false)
+  backgroundCheckRequired Boolean          @default(false)
+  securityClearanceRequired Boolean        @default(false)
   dedupeHash              String?
   importedAt              DateTime?
+  csvManagedAt            DateTime?
+  lastCsvImportBatchId    String?
+  lastCsvImportBatch      JobImportBatch?  @relation("JobCsvImportBatch", fields: [lastCsvImportBatchId], references: [id], onDelete: SetNull)
   autoEmailEnabled        Boolean          @default(false)
   autoEmailTemplateId     String?
   autoEmailMinScore       Int              @default(70)
@@ -338,6 +405,7 @@ model Job {
   matches                 JobMatch[]
   linkedInMatches         LinkedInJobMatch[]
   documents               Document[]
+  notes                   JobNote[]
   emailCampaigns          EmailCampaign[]
   channels                Channel[]
   activities              JobActivity[]
@@ -346,11 +414,13 @@ model Job {
 
   @@unique([organizationId, jobCode])
   @@unique([organizationId, source, externalId])
+  @@unique([organizationId, referralKey])
   @@index([organizationId, status])
   @@index([organizationId, status, createdAt])
   @@index([organizationId, status, importedAt])
   @@index([organizationId, status, closedAt])
   @@index([organizationId, source])
+  @@index([organizationId, source, status])
   @@index([externalId])
   @@index([clientId])
   @@index([dedupeHash])
@@ -360,19 +430,42 @@ model Job {
   @@index([organizationId, updatedAt])
   @@index([organizationId, title])
   @@index([organizationId, location])
+  @@index([lastCsvImportBatchId])
 }
 
 model JobImportBatch {
-  id             String   @id @default(cuid())
+  id             String                @id @default(cuid())
   organizationId String
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization   Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   fileName       String
   format         String
-  totalRows      Int      @default(0)
-  imported       Int      @default(0)
-  duplicates     Int      @default(0)
-  errors         Int      @default(0)
-  createdAt      DateTime @default(now())
+  status         JobImportBatchStatus  @default(COMPLETED)
+  totalRows      Int                   @default(0)
+  imported       Int                   @default(0)
+  duplicates     Int                   @default(0)
+  errors         Int                   @default(0)
+  newCount       Int                   @default(0)
+  updated        Int                   @default(0)
+  reopened       Int                   @default(0)
+  willClose      Int                   @default(0)
+  closed         Int                   @default(0)
+  unchanged      Int                   @default(0)
+  conflict       Int                   @default(0)
+  invalid        Int                   @default(0)
+  duplicateRows  Int                   @default(0)
+  created        Int                   @default(0)
+  previewJson    Json?
+  resultJson     Json?
+  uploadedById   String?
+  confirmedAt    DateTime?
+  startedAt      DateTime?
+  errorMessage   String?
+  createdAt      DateTime              @default(now())
+
+  csvManagedJobs Job[]                 @relation("JobCsvImportBatch")
+
+  @@index([organizationId, createdAt])
+  @@index([organizationId, status])
 }
 
 enum ResumeImportStatus {
@@ -417,8 +510,13 @@ model EmailSendQueue {
   organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   jobId          String
   candidateId    String
-  templateId     String
-  senderUserId   String
+  templateId     String?
+  senderUserId   String?
+  outreachMailboxId String?
+  outreachMailbox OutreachMailbox? @relation(fields: [outreachMailboxId], references: [id], onDelete: SetNull)
+  subject        String?
+  body           String?
+  customLink     String?
   status         EmailQueueStatus @default(PENDING)
   retryCount     Int              @default(0)
   maxRetries     Int              @default(3)
@@ -431,6 +529,7 @@ model EmailSendQueue {
   @@index([status, nextRetryAt])
   @@index([organizationId])
   @@index([jobId, candidateId])
+  @@index([outreachMailboxId])
 }
 
 model JobActivity {
@@ -443,6 +542,22 @@ model JobActivity {
   createdAt DateTime @default(now())
 
   @@index([jobId, createdAt])
+}
+
+model JobNote {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  jobId          String
+  job            Job          @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  authorId       String?
+  author         User?        @relation("JobNoteAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  body           String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([jobId, createdAt])
+  @@index([organizationId])
 }
 
 enum CandidateSource {
@@ -472,8 +587,11 @@ model Candidate {
   lastName          String
   headline          String?
   email             String?
+  altEmail          String?
   phone             String?
   phoneCountryCode  String?
+  altPhone          String?
+  altPhoneCountryCode String?
   linkedIn          String?
   normalizedEmail   String?
   normalizedPhone   String?
@@ -524,6 +642,9 @@ model Candidate {
   educations        CandidateEducation[]
   candidateCerts    CandidateCertification[]
   searchIndex       CandidateSearchIndex?
+  micro1Referrals   Micro1Referral[]
+  micro1NameLinks   Micro1NameLink[]
+  suggestedForReferrals Micro1Referral[] @relation("Micro1SuggestedCandidate")
 
   @@index([organizationId])
   @@index([organizationId, createdAt])
@@ -826,12 +947,14 @@ model JobMatch {
   requirementBreakdown   Json?
   retrievalScore         Float     @default(0)
   computedAt             DateTime  @default(now())
+  dismissedAt            DateTime?
 
   @@unique([jobId, candidateId])
   @@index([jobId, score(sort: Desc)])
   @@index([candidateId])
   @@index([jobId, computedAt])
   @@index([jobId, matchStatus])
+  @@index([jobId, dismissedAt])
 }
 
 model Skill {
@@ -1046,6 +1169,29 @@ model GmailConnection {
   updatedAt    DateTime @updatedAt
 
   @@unique([userId])
+}
+
+model OutreachMailbox {
+  id                String   @id @default(cuid())
+  organizationId    String
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  connectedByUserId String
+  connectedBy       User     @relation(fields: [connectedByUserId], references: [id], onDelete: Cascade)
+  email             String
+  accessToken       String
+  refreshToken      String
+  dailySendLimit    Int      @default(2000)
+  sentCount         Int      @default(0)
+  sentCountDate     String?
+  lastSentAt        DateTime?
+  isActive          Boolean  @default(true)
+  lastError         String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  emailSendQueue    EmailSendQueue[]
+
+  @@unique([organizationId, email])
+  @@index([organizationId, isActive])
 }
 
 model Notification {
@@ -1355,6 +1501,15 @@ model OrgSettings {
   websiteJobLastSyncAt  DateTime?
   websiteJobLastSyncStats Json?
   websiteJobAutoSyncEnabled Boolean @default(true)
+  micro1ReferralStatusMap Json?
+  micro1SyncEnabled     Boolean  @default(false)
+  micro1LoginEmail      String?
+  micro1PasswordEnc     String?
+  micro1SessionEnc      String?
+  micro1LastSyncAt      DateTime?
+  micro1LastSyncError   String?
+  micro1LastSyncStats   Json?
+  matchOutreachDelayMs  Int          @default(45000)
   updatedAt             DateTime     @updatedAt
 }
 
@@ -1553,4 +1708,155 @@ model JobSearchIndex {
 
   @@index([organizationId])
 }
+
+enum Micro1ReferralStage {
+  DUPLICATE
+  APPLYING
+  AI_INTERVIEW
+  CRITERIA_MET
+  CERTIFIED
+  MATCHED
+  STARTED
+  SUCCESSFUL
+}
+
+enum Micro1MatchingStatus {
+  MATCHED
+  UNMATCHED
+  NEEDS_REVIEW
+  LEFT_UNMATCHED
+}
+
+enum Micro1ImportBatchStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+model Micro1Referral {
+  id                     String                @id @default(cuid())
+  organizationId         String
+  organization           Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  candidateId            String?
+  candidate              Candidate?            @relation(fields: [candidateId], references: [id], onDelete: SetNull)
+  identityKey            String
+  csvName                String
+  normalizedName         String
+  externalId             String?
+  referrer               String?
+  dateReferred           DateTime?
+  projectType            String?
+  csvStatus              String
+  stage                  Micro1ReferralStage
+  appliedAt              DateTime?
+  aiInterviewCompletedAt DateTime?
+  criteriaMetAt          DateTime?
+  certifiedAt            DateTime?
+  matchedAt              DateTime?
+  startedAt              DateTime?
+  successfulAt           DateTime?
+  tasksCompleted         Int?
+  hoursWorked            Decimal?              @db.Decimal(12, 2)
+  payoutAmount           Decimal?              @db.Decimal(12, 2)
+  transactionId          String?
+  matchingStatus         Micro1MatchingStatus  @default(UNMATCHED)
+  matchingConfidence     Float?
+  matchingReason         String?
+  suggestedCandidateId   String?
+  suggestedCandidate     Candidate?            @relation("Micro1SuggestedCandidate", fields: [suggestedCandidateId], references: [id], onDelete: SetNull)
+  lastImportBatchId      String?
+  lastImportBatch        Micro1ReferralImportBatch? @relation("Micro1ReferralLastBatch", fields: [lastImportBatchId], references: [id], onDelete: SetNull)
+  lastImportedAt         DateTime?
+  lastSeenInImportAt     DateTime?
+  linkedByUserId         String?
+  linkedBy               User?                 @relation("Micro1ReferralLinkedBy", fields: [linkedByUserId], references: [id], onDelete: SetNull)
+  linkedAt               DateTime?
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+
+  statusEvents           Micro1ReferralStatusEvent[]
+  matchAudits            Micro1MatchAudit[]
+
+  @@unique([organizationId, identityKey])
+  @@index([organizationId, stage])
+  @@index([organizationId, matchingStatus])
+  @@index([organizationId, csvStatus])
+  @@index([organizationId, lastSeenInImportAt])
+  @@index([candidateId])
+}
+
+model Micro1ReferralStatusEvent {
+  id            String               @id @default(cuid())
+  referralId    String
+  referral      Micro1Referral       @relation(fields: [referralId], references: [id], onDelete: Cascade)
+  csvStatus     String
+  mappedStage   Micro1ReferralStage?
+  appliedStage  Micro1ReferralStage
+  importBatchId String?
+  importBatch   Micro1ReferralImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  createdAt     DateTime             @default(now())
+
+  @@index([referralId, createdAt])
+}
+
+model Micro1ReferralImportBatch {
+  id             String                  @id @default(cuid())
+  organizationId String
+  organization   Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  fileName       String
+  fileHash       String
+  status         Micro1ImportBatchStatus @default(RUNNING)
+  totalRows      Int                     @default(0)
+  validCount     Int                     @default(0)
+  invalidCount   Int                     @default(0)
+  matched        Int                     @default(0)
+  unmatched      Int                     @default(0)
+  needsReview    Int                     @default(0)
+  statusChanges  Int                     @default(0)
+  createdCount   Int                     @default(0)
+  updatedCount   Int                     @default(0)
+  duplicateRows  Int                     @default(0)
+  resultJson     Json?
+  errorMessage   String?
+  uploadedById   String?
+  uploadedBy     User?                   @relation("Micro1ImportUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
+  createdAt      DateTime                @default(now())
+
+  referrals      Micro1Referral[]        @relation("Micro1ReferralLastBatch")
+  statusEvents   Micro1ReferralStatusEvent[]
+
+  @@index([organizationId, createdAt])
+  @@index([organizationId, fileHash])
+}
+
+model Micro1NameLink {
+  id             String     @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  normalizedName String
+  candidateId    String
+  candidate      Candidate  @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  createdAt      DateTime   @default(now())
+
+  @@unique([organizationId, normalizedName])
+  @@index([candidateId])
+}
+
+model Micro1MatchAudit {
+  id             String               @id @default(cuid())
+  organizationId String
+  organization   Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  referralId     String
+  referral       Micro1Referral       @relation(fields: [referralId], references: [id], onDelete: Cascade)
+  actorUserId    String?
+  actor          User?                @relation("Micro1MatchActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  fromStatus     Micro1MatchingStatus
+  toStatus       Micro1MatchingStatus
+  candidateId    String?
+  createdAt      DateTime             @default(now())
+
+  @@index([referralId, createdAt])
+  @@index([organizationId, createdAt])
+}
+
 

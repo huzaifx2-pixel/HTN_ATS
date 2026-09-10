@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { getActiveOrganization, getSession, hasPermission } from "@/lib/auth/session";
+import { getRoleFeatures } from "@/lib/services/role-feature-service";
 import { getMarketingSettings } from "@/lib/services/marketing-brand-service";
 import { listPendingApprovalCampaigns } from "@/lib/services/marketing-scheduled-service";
 import { PageHeader } from "@/components/shared/dashboard-widgets";
@@ -16,7 +17,11 @@ export default async function MarketingSettingsPage() {
     getMarketingSettings(member.organizationId),
     listPendingApprovalCampaigns(member.organizationId),
   ]);
-  const canAdmin = hasPermission(member.role, "admin");
+  const canAdmin = hasPermission(
+    member.role,
+    "admin",
+    await getRoleFeatures(member.organizationId, member.role),
+  );
 
   return (
     <div className="space-y-6">

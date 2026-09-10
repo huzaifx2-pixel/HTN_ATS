@@ -16,6 +16,21 @@ export type ImportedJobRow = {
   referralLink?: string;
 };
 
+export type ImportedJobRowIssue = {
+  rowNumber: number;
+  reason: string;
+  referralLink?: string;
+  title?: string;
+  clientName?: string;
+};
+
+export type ParsedJobImportDetailed = {
+  rows: Array<ImportedJobRow & { rowNumber: number; referralKey: string }>;
+  invalid: ImportedJobRowIssue[];
+  duplicateReferralKeys: Array<{ referralKey: string; rows: number[] }>;
+  totalRawRows: number;
+};
+
 const HEADER_MAP: Record<string, keyof ImportedJobRow> = {
   clientprefix: "clientPrefix",
   "client prefix": "clientPrefix",
@@ -84,6 +99,15 @@ function optionalInt(value: unknown): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+export function normalizeReferralKey(value?: string | null): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+export function normalizeClientName(value?: string | null): string {
+  return (value ?? "").trim().replace(/\s+/g, " ");
+}
+
 export function parsePayRange(value?: string): { salaryMin?: number; salaryMax?: number } {
   if (!value) return {};
   const matches = [...value.matchAll(/(\d+(?:\.\d+)?)\s*(k)?/gi)];
@@ -98,12 +122,12 @@ export function parsePayRange(value?: string): { salaryMin?: number; salaryMax?:
   return { salaryMin: Math.min(amounts[0], amounts[1]), salaryMax: Math.max(amounts[0], amounts[1]) };
 }
 
-function mapRecord(record: Record<string, unknown>): ImportedJobRow | null {
+function mapRecordPartial(record: Record<string, unknown>): Partial<ImportedJobRow> {
   const mapped: Partial<ImportedJobRow> = {};
 
   for (const [rawKey, rawValue] of Object.entries(record)) {
     const key = normalizeHeader(rawKey);
-    if (!key) continue;
+    if (!key || key.startsWith("__empty_")) continue;
     const field = HEADER_MAP[key];
     if (!field) continue;
 
@@ -130,13 +154,17 @@ function mapRecord(record: Record<string, unknown>): ImportedJobRow | null {
     }
   }
 
+  return mapped;
+}
+
+function mapRecord(record: Record<string, unknown>): ImportedJobRow | null {
+  const mapped = mapRecordPartial(record);
   const title = mapped.title?.trim() ?? "";
   const clientName = mapped.clientName?.trim();
   const clientPrefix = mapped.clientPrefix?.trim();
   if (!title || (!clientName && !clientPrefix)) return null;
 
   const pay = parsePayRange(mapped.pay);
-
   return {
     clientName,
     clientPrefix,
@@ -153,6 +181,100 @@ function mapRecord(record: Record<string, unknown>): ImportedJobRow | null {
   };
 }
 
+function classifyRecords(records: Record<string, unknown>[]): ParsedJobImportDetailed {
+  const invalid: ImportedJobRowIssue[] = [];
+  const candidates: Array<ImportedJobRow & { rowNumber: number; referralKey: string }> = [];
+  const keyToRows = new Map<string, number[]>();
+
+  records.forEach((record, index) => {
+    const rowNumber = index + 2; // header is row 1
+    const mapped = mapRecordPartial(record);
+    const title = mapped.title?.trim() ?? "";
+    const clientName = mapped.clientName?.trim();
+    const clientPrefix = mapped.clientPrefix?.trim();
+    const referralKey = normalizeReferralKey(mapped.referralLink);
+
+    const isEmptyRow =
+      !title &&
+      !clientName &&
+      !clientPrefix &&
+      !referralKey &&
+      !mapped.description &&
+      !mapped.skills &&
+      !mapped.pay;
+
+    if (isEmptyRow) return;
+
+    if (!referralKey) {
+      invalid.push({
+        rowNumber,
+        reason: "Referral Link is required",
+        title: title || undefined,
+        clientName: clientName || clientPrefix,
+      });
+      return;
+    }
+
+    if (!title || (!clientName && !clientPrefix)) {
+      invalid.push({
+        rowNumber,
+        reason: "Client and title are required",
+        referralLink: referralKey,
+        title: title || undefined,
+        clientName: clientName || clientPrefix,
+      });
+      return;
+    }
+
+    const pay = parsePayRange(mapped.pay);
+    const row: ImportedJobRow & { rowNumber: number; referralKey: string } = {
+      clientName,
+      clientPrefix,
+      title,
+      description: mapped.description,
+      location: mapped.location,
+      skills: mapped.skills,
+      experienceYears: mapped.experienceYears,
+      openings: mapped.openings,
+      pay: mapped.pay,
+      salaryMin: pay.salaryMin,
+      salaryMax: pay.salaryMax,
+      referralLink: referralKey,
+      rowNumber,
+      referralKey,
+    };
+
+    candidates.push(row);
+    const rows = keyToRows.get(referralKey) ?? [];
+    rows.push(rowNumber);
+    keyToRows.set(referralKey, rows);
+  });
+
+  const duplicateReferralKeys = [...keyToRows.entries()]
+    .filter(([, rows]) => rows.length > 1)
+    .map(([referralKey, rows]) => ({ referralKey, rows }));
+
+  const duplicateKeySet = new Set(duplicateReferralKeys.map((d) => d.referralKey));
+  const rows = candidates.filter((row) => !duplicateKeySet.has(row.referralKey));
+
+  for (const dup of duplicateReferralKeys) {
+    for (const rowNumber of dup.rows) {
+      invalid.push({
+        rowNumber,
+        reason: `Duplicate Referral Link in file (also on rows ${dup.rows.join(", ")})`,
+        referralLink: dup.referralKey,
+      });
+    }
+  }
+
+  return {
+    rows,
+    invalid,
+    duplicateReferralKeys,
+    totalRawRows: records.length,
+  };
+}
+
 function detectDelimiter(sample: string): string | undefined {
   const firstLine = sample.split(/\r?\n/).find((line) => line.trim()) ?? "";
   const tabs = (firstLine.match(/\t/g) ?? []).length;
@@ -160,14 +282,13 @@ function detectDelimiter(sample: string): string | undefined {
   const commas = (firstLine.match(/,/g) ?? []).length;
   const pipedNames = (firstLine.match(/\|[A-Za-z][^|]{0,40}\|/g) ?? []).length;
 
-  // "|Client|  title  |Job Description|  |Openings|" — pipes wrap names, tabs are padding.
   if (pipedNames >= 2 && pipes >= tabs && pipes > commas) return "|";
   if (tabs >= pipes && tabs >= commas && tabs > 0) return "\t";
   if (pipes > commas && pipes > 0) return "|";
   return undefined;
 }
 
-export function parseJobCsv(text: string): ImportedJobRow[] {
+function parseCsvRecords(text: string): Record<string, unknown>[] {
   let emptyHeaderIndex = 0;
   const parsed = Papa.parse<Record<string, unknown>>(text, {
     header: true,
@@ -179,29 +300,43 @@ export function parseJobCsv(text: string): ImportedJobRow[] {
       return key;
     },
   });
-
-  return parsed.data
-    .map(mapRecord)
-    .filter((row): row is ImportedJobRow => row !== null);
+  return parsed.data;
 }
 
-export function parseJobXlsx(buffer: ArrayBuffer): ImportedJobRow[] {
+export function parseJobCsvDetailed(text: string): ParsedJobImportDetailed {
+  return classifyRecords(parseCsvRecords(text));
+}
+
+export function parseJobXlsxDetailed(buffer: ArrayBuffer): ParsedJobImportDetailed {
   const workbook = XLSX.read(buffer, { type: "array" });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   if (!sheet) throw new Error("Workbook has no sheets");
   const data = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: "" });
-  return data.map(mapRecord).filter((row): row is ImportedJobRow => row !== null);
+  return classifyRecords(data);
+}
+
+export function parseJobJsonDetailed(text: string): ParsedJobImportDetailed {
+  const parsed = JSON.parse(text) as unknown;
+  if (!Array.isArray(parsed)) throw new Error("JSON must be an array of job objects");
+  return classifyRecords(parsed.map((row) => (row ?? {}) as Record<string, unknown>));
+}
+
+export function parseJobCsv(text: string): ImportedJobRow[] {
+  return parseJobCsvDetailed(text).rows;
+}
+
+export function parseJobXlsx(buffer: ArrayBuffer): ImportedJobRow[] {
+  return parseJobXlsxDetailed(buffer).rows;
 }
 
 export function parseJobJson(text: string): ImportedJobRow[] {
-  const parsed = JSON.parse(text) as unknown;
-  if (!Array.isArray(parsed)) throw new Error("JSON must be an array of job objects");
-  return parsed
-    .map((row) => mapRecord((row ?? {}) as Record<string, unknown>))
-    .filter((row): row is ImportedJobRow => row !== null);
+  return parseJobJsonDetailed(text).rows;
 }
 
-export async function parseJobImportFile(file: File, format: string): Promise<ImportedJobRow[]> {
+export async function parseJobImportFileDetailed(
+  file: File,
+  format: string,
+): Promise<ParsedJobImportDetailed> {
   const lower = file.name.toLowerCase();
   const resolved =
     lower.endsWith(".xlsx") || lower.endsWith(".xls")
@@ -210,7 +345,11 @@ export async function parseJobImportFile(file: File, format: string): Promise<Im
         ? "json"
         : format || "csv";
 
-  if (resolved === "json") return parseJobJson(await file.text());
-  if (resolved === "xlsx") return parseJobXlsx(await file.arrayBuffer());
-  return parseJobCsv(await file.text());
+  if (resolved === "json") return parseJobJsonDetailed(await file.text());
+  if (resolved === "xlsx") return parseJobXlsxDetailed(await file.arrayBuffer());
+  return parseJobCsvDetailed(await file.text());
+}
+
+export async function parseJobImportFile(file: File, format: string): Promise<ImportedJobRow[]> {
+  return (await parseJobImportFileDetailed(file, format)).rows;
 }

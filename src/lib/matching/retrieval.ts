@@ -1,8 +1,7 @@
 import { prisma } from "@/lib/db";
-import { Prisma } from "@prisma/client";
 import type { Job } from "@prisma/client";
 import { collectPositiveBooleanTerms, parseBooleanQuery } from "@/lib/matching/boolean-search/parse";
-import { booleanQueryToTsquery } from "@/lib/search/boolean-tsquery";
+import { booleanQueryToTsquery, termsToOrTsquery } from "@/lib/search/boolean-tsquery";
 
 export type RetrievalSignals = {
   boolean: boolean;
@@ -22,7 +21,6 @@ export type RetrievalResult = {
 
 const MAX_EVALUATE = 800;
 const FTS_LIMIT = 600;
-const LOCATION_LIMIT = 400;
 
 function emptySignals(): RetrievalSignals {
   return { boolean: false, title: false, skills: false, semantic: false, location: false };
@@ -71,49 +69,9 @@ async function ftsCandidateIds(
   `;
 }
 
-function likePattern(value: string) {
-  return `%${value.replace(/[%_]/g, "\\$&")}%`;
-}
-
-async function locationCandidateIds(organizationId: string, job: Job): Promise<string[]> {
-  const clauses: Prisma.Sql[] = [];
-  const country = job.country?.trim();
-  const city = job.city?.trim();
-  const location = job.location?.trim();
-
-  if (country && country.toLowerCase() !== "global") {
-    const like = likePattern(country);
-    clauses.push(Prisma.sql`(c.country ILIKE ${country} OR c.location ILIKE ${like})`);
-  }
-  if (city) {
-    const like = likePattern(city);
-    clauses.push(Prisma.sql`(c.city ILIKE ${like} OR c.location ILIKE ${like})`);
-  }
-  if (location && location.toLowerCase() !== "global") {
-    const like = likePattern(location);
-    clauses.push(Prisma.sql`(c.location ILIKE ${like} OR c.city ILIKE ${like} OR c.country ILIKE ${like})`);
-  }
-  if (job.remote) {
-    clauses.push(Prisma.sql`(c.location ILIKE '%remote%' OR c.city ILIKE '%remote%')`);
-  }
-
-  if (clauses.length === 0) return [];
-
-  const rows = await prisma.$queryRaw<Array<{ id: string }>>`
-    SELECT c.id
-    FROM "Candidate" c
-    WHERE c."organizationId" = ${organizationId}
-      AND c."deletedAt" IS NULL
-      AND (${Prisma.join(clauses, " OR ")})
-    ORDER BY c."updatedAt" DESC
-    LIMIT ${LOCATION_LIMIT}
-  `;
-  return rows.map((row) => row.id);
-}
-
 /**
- * Shortlist by Boolean search and location only.
- * Title, skills, tools, and semantic similarity are not used.
+ * Shortlist by Boolean search only.
+ * Location, title, skills, tools, and semantic similarity are not used.
  */
 export async function shortlistCandidatesForJob(
   organizationId: string,
@@ -145,15 +103,19 @@ export async function shortlistCandidatesForJob(
         console.warn("[matching] Boolean FTS discovery failed:", error instanceof Error ? error.message : error);
       }
     }
-  }
 
-  try {
-    const locationIds = await locationCandidateIds(organizationId, job);
-    for (const id of locationIds) {
-      addPoints(scores, signals, id, 10, "location");
+    // Broad OR of positive terms improves recall when the structured Boolean is very strict.
+    const orQuery = termsToOrTsquery(discoveryTermsForJob(job));
+    if (orQuery) {
+      try {
+        const rows = await ftsCandidateIds(organizationId, orQuery, FTS_LIMIT);
+        for (const row of rows) {
+          addPoints(scores, signals, row.id, 8 + Math.min(row.rank * 5, 6), "boolean");
+        }
+      } catch (error) {
+        console.warn("[matching] Boolean term OR discovery failed:", error instanceof Error ? error.message : error);
+      }
     }
-  } catch (error) {
-    console.warn("[matching] Location discovery failed:", error instanceof Error ? error.message : error);
   }
 
   const mustInclude = [...new Set(existing.map((row) => row.candidateId))];

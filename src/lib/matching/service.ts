@@ -21,6 +21,10 @@ import {
 import { isMatchingKilled } from "@/lib/matching/kill-switch";
 import { shortlistCandidatesForJob, type RetrievalSignals } from "@/lib/matching/retrieval";
 import { analysisPersistFields, isPersistableMatch } from "@/lib/matching/persist";
+import {
+  isMatchAnalysisDismissed,
+  persistAnalysisKeepingDismissed,
+} from "@/lib/matching/match-dismissed";
 import type { RecruiterMatchAnalysis } from "@/lib/matching/recruiter-engine/types";
 
 type MatchRow = {
@@ -64,6 +68,7 @@ async function upsertMatchesBatch(
   if (persistable.length === 0) return 0;
 
   const previousByKey = new Map<string, MatchRowSnapshot>();
+  const dismissedKeys = new Set<string>();
   for (let i = 0; i < persistable.length; i += UPSERT_BATCH_SIZE) {
     const batch = persistable.slice(i, i + UPSERT_BATCH_SIZE);
     const existing = await prisma.jobMatch.findMany({
@@ -85,13 +90,16 @@ async function upsertMatchesBatch(
         retrievalScore: true,
         missingSkills: true,
         reason: true,
+        analysis: true,
       },
     });
     for (const row of existing) {
+      const key = `${row.jobId}:${row.candidateId}`;
+      if (isMatchAnalysisDismissed(row.analysis)) dismissedKeys.add(key);
       const missingSkills = Array.isArray(row.missingSkills)
         ? row.missingSkills.filter((item): item is string => typeof item === "string")
         : [];
-      previousByKey.set(`${row.jobId}:${row.candidateId}`, {
+      previousByKey.set(key, {
         score: row.score,
         skillsMatch: row.skillsMatch,
         experienceMatch: row.experienceMatch,
@@ -125,8 +133,11 @@ async function upsertMatchesBatch(
     const batch = changedRows.slice(i, i + UPSERT_BATCH_SIZE);
     await prisma.$transaction(
       batch.map((row) => {
-        const analysis = compactAnalysis(row.score, row.analysis);
         const key = `${row.jobId}:${row.candidateId}`;
+        const analysis = persistAnalysisKeepingDismissed(
+          compactAnalysis(row.score, row.analysis),
+          dismissedKeys.has(key),
+        );
         const exists = previousByKey.has(key);
         const extras = analysisPersistFields(row.analysis);
         return prisma.jobMatch.upsert({

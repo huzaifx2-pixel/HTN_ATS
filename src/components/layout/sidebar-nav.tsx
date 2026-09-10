@@ -5,17 +5,23 @@ import { usePathname } from "next/navigation";
 import { useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { EXECUTIVE_NAV } from "@/lib/nav/executive-nav";
+import { defaultFeaturesForRole, filterNavSections } from "@/lib/auth/features";
 import { HeadsbaseLogo } from "@/components/brand/headsbase-logo";
+import type { MemberRole } from "@prisma/client";
 
 export function SidebarNav({
   badges = {},
+  role = "RECRUITER",
+  features,
 }: {
   user?: { name: string; image?: string | null; role?: string };
   badges?: Record<string, number>;
+  role?: MemberRole;
+  features?: string[];
 }) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
+  const sections = filterNavSections(features ?? defaultFeaturesForRole(role), role);
 
   return (
     <aside
@@ -29,7 +35,7 @@ export function SidebarNav({
       </div>
 
       <nav className="flex-1 overflow-y-auto px-2 py-4">
-        {EXECUTIVE_NAV.map((section) => (
+        {sections.map((section) => (
           <div key={section.title} className="mb-5">
             {!collapsed && (
               <div className="mb-2 px-3 text-[10px] font-semibold uppercase tracking-widest text-slate-400">

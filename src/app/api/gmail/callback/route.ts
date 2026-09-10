@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { exchangeCodeForTokens, getGoogleUserEmail } from "@/lib/gmail/client";
 import { verifySignedGmailOAuthState } from "@/lib/gmail/oauth-state";
 import { saveGmailConnection } from "@/lib/services/gmail-service";
+import { saveOutreachMailbox } from "@/lib/services/outreach-mailbox-service";
 import { getAppBaseUrl, getRequestOrigin } from "@/lib/runtime/app-url";
 
 export async function GET(request: NextRequest) {
@@ -23,8 +24,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(integrationsUrl);
   }
 
-  const userId = state ? verifySignedGmailOAuthState(state) : null;
-  if (!code || !userId) {
+  const parsed = state ? verifySignedGmailOAuthState(state) : null;
+  if (!code || !parsed?.userId) {
     integrationsUrl.searchParams.set("error", "invalid_state");
     return NextResponse.redirect(integrationsUrl);
   }
@@ -37,9 +38,24 @@ export async function GET(request: NextRequest) {
     }
 
     const email = await getGoogleUserEmail(tokens.access_token);
-    await saveGmailConnection(userId, email, tokens.access_token, tokens.refresh_token);
+    if (parsed.purpose === "outreach") {
+      if (!parsed.organizationId) {
+        integrationsUrl.searchParams.set("error", "invalid_state");
+        return NextResponse.redirect(integrationsUrl);
+      }
+      await saveOutreachMailbox({
+        organizationId: parsed.organizationId,
+        connectedByUserId: parsed.userId,
+        email,
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token,
+      });
+      integrationsUrl.searchParams.set("outreach", "1");
+    } else {
+      await saveGmailConnection(parsed.userId, email, tokens.access_token, tokens.refresh_token);
+      integrationsUrl.searchParams.set("connected", "1");
+    }
 
-    integrationsUrl.searchParams.set("connected", "1");
     return NextResponse.redirect(integrationsUrl);
   } catch (e) {
     integrationsUrl.searchParams.set("error", (e as Error).message);

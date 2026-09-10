@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { requirePermission } from "@/lib/auth/session";
+import { requireFeature } from "@/lib/auth/session";
 import { z } from "zod";
 
 export const createClientSchema = z.object({
@@ -17,7 +17,7 @@ export async function listClients(organizationId: string) {
 }
 
 export async function createClient(input: z.infer<typeof createClientSchema>) {
-  const ctx = await requirePermission("admin");
+  const ctx = await requireFeature("crm.companies");
   const data = createClientSchema.parse(input);
 
   const client = await prisma.client.create({
@@ -49,7 +49,7 @@ export async function updateClient(
   id: string,
   input: Partial<z.infer<typeof createClientSchema>>
 ) {
-  const ctx = await requirePermission("admin");
+  const ctx = await requireFeature("crm.companies");
   return prisma.client.update({
     where: { id, organizationId: ctx.organizationId },
     data: input,
@@ -57,7 +57,7 @@ export async function updateClient(
 }
 
 export async function deleteClient(id: string) {
-  const ctx = await requirePermission("admin");
+  const ctx = await requireFeature("crm.companies");
   return prisma.client.delete({
     where: { id, organizationId: ctx.organizationId },
   });

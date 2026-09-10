@@ -1,5 +1,7 @@
 import { prisma } from "@/lib/db";
 import { isProtectedReviewStatus } from "@/lib/parsers/pipeline/parsed-field";
+import { setParseOverrides } from "@/lib/parsers/candidate-fields";
+import { sanitizeCandidateEmail, sanitizeCandidateLocation } from "@/lib/sanitize-contact";
 import type { StructuredParseResult } from "@/lib/parsers/pipeline/types";
 
 export type ParseReviewEntity =
@@ -38,6 +40,44 @@ export async function listParseReviewFields(candidateId: string, organizationId:
 
   const structured = getStructured(candidate.parsedResume?.structured);
   const fields: ReviewField[] = [];
+
+  fields.push(
+    {
+      entity: "candidate",
+      id: "firstName",
+      label: "First name",
+      value: candidate.firstName ?? "",
+      reviewStatus: "needs_review",
+    },
+    {
+      entity: "candidate",
+      id: "lastName",
+      label: "Last name",
+      value: candidate.lastName ?? "",
+      reviewStatus: "needs_review",
+    },
+    {
+      entity: "candidate",
+      id: "email",
+      label: "Email",
+      value: candidate.email ?? "",
+      reviewStatus: "needs_review",
+    },
+    {
+      entity: "candidate",
+      id: "phone",
+      label: "Phone",
+      value: candidate.phone ?? "",
+      reviewStatus: "needs_review",
+    },
+    {
+      entity: "candidate",
+      id: "location",
+      label: "Location",
+      value: candidate.location ?? "",
+      reviewStatus: "needs_review",
+    },
+  );
 
   const push = (item: ReviewField) => {
     if (item.reviewStatus === "needs_review" || (item.confidence != null && item.confidence < 0.6)) {
@@ -151,15 +191,18 @@ export async function applyParseReview(input: {
         data.yearsExperience = Math.round(years);
       }
     }
-    const metadata =
-      candidate.metadata && typeof candidate.metadata === "object" && !Array.isArray(candidate.metadata)
-        ? { ...(candidate.metadata as Record<string, unknown>) }
-        : {};
-    const overrides = {
-      ...((metadata.parseOverrides as Record<string, unknown> | undefined) ?? {}),
-      [input.id]: true,
-    };
-    metadata.parseOverrides = overrides;
+    if (input.id === "firstName" && input.value != null) data.firstName = input.value.trim();
+    if (input.id === "lastName" && input.value != null) data.lastName = input.value.trim();
+    if (input.id === "email" && input.value != null) {
+      data.email = sanitizeCandidateEmail(input.value) ?? input.value.trim();
+    }
+    if (input.id === "phone" && input.value != null) data.phone = input.value.trim();
+    if (input.id === "location" && input.value != null) {
+      data.location = sanitizeCandidateLocation(input.value) ?? input.value.trim();
+    }
+    const overrideKeys =
+      input.id === "location" ? ["location", "city", "country"] : [input.id];
+    const metadata = setParseOverrides(candidate.metadata, overrideKeys);
     await prisma.candidate.update({
       where: { id: input.candidateId },
       data: { ...data, metadata: metadata as object },

@@ -9,6 +9,7 @@ import { Input, Label } from "@/components/ui/input";
 import { addUserAction, removeUserAction, updateUserRoleAction } from "@/app/(dashboard)/admin/users/actions";
 import { EditableMemberName } from "@/components/admin/editable-member-name";
 import { ResetMemberPasswordButton } from "@/components/admin/reset-member-password-button";
+import { displayRoleLabel } from "@/lib/auth/features";
 import type { MemberRole } from "@prisma/client";
 
 type MemberRow = {
@@ -22,7 +23,7 @@ type MemberRow = {
   };
 };
 
-const ROLE_OPTIONS: MemberRole[] = ["ADMIN", "RECRUITER", "VIEWER"];
+const ROLE_OPTIONS: MemberRole[] = ["ADMIN", "RECRUITER", "EXTERNAL_RECRUITER"];
 
 const selectClassName =
   "flex h-9 rounded-lg border border-input bg-card px-2 text-sm";
@@ -77,9 +78,9 @@ export function UserManagementPanel({
               <div>
                 <Label htmlFor="role">Role</Label>
                 <select id="role" name="role" defaultValue="RECRUITER" className={`mt-1 w-full ${selectClassName}`}>
-                  {ROLE_OPTIONS.map((role) => (
+                    {ROLE_OPTIONS.map((role) => (
                     <option key={role} value={role}>
-                      {role}
+                      {displayRoleLabel(role)}
                     </option>
                   ))}
                 </select>
@@ -100,7 +101,7 @@ export function UserManagementPanel({
         <CardContent className="space-y-3">
           {!canManage && (
             <p className="text-xs text-muted-foreground">
-              Only the super admin can add, remove, change roles, or edit member names.
+              Only Superadmin can add, remove, change roles, or edit member names.
             </p>
           )}
           {members.map((member) => {
@@ -118,7 +119,7 @@ export function UserManagementPanel({
                   <div className="truncate text-xs text-muted-foreground">{member.user.email}</div>
                 </div>
 
-                {canManage && !isOwner ? (
+                {canManage && !isOwner && ROLE_OPTIONS.includes(member.role) ? (
                   <select
                     value={member.role}
                     disabled={pending || isSelf}
@@ -133,12 +134,12 @@ export function UserManagementPanel({
                   >
                     {ROLE_OPTIONS.map((role) => (
                       <option key={role} value={role}>
-                        {role}
+                        {displayRoleLabel(role)}
                       </option>
                     ))}
                   </select>
                 ) : (
-                  <span className="rounded-full bg-muted px-2 py-0.5 text-xs">{member.role}</span>
+                  <span className="rounded-full bg-muted px-2 py-0.5 text-xs">{displayRoleLabel(member.role)}</span>
                 )}
 
                 {canManage && (

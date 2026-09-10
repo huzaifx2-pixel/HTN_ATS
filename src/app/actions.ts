@@ -6,16 +6,22 @@ import * as clientService from "@/lib/services/client-service";
 import * as jobService from "@/lib/services/job-service";
 import * as candidateService from "@/lib/services/candidate-service";
 import * as pipelineService from "@/lib/services/pipeline-service";
+import * as micro1ReferralService from "@/lib/services/micro1-referral-service";
 import * as emailService from "@/lib/services/email-service";
 import * as gmailService from "@/lib/services/gmail-service";
 import * as messagingService from "@/lib/services/messaging-service";
 import { requireOrgContext, requirePermission } from "@/lib/auth/session";
 import { buildBooleanSearchForJob } from "@/lib/services/job-service";
 import { generateBooleanSearch } from "@/lib/matching/boolean-search/generate";
-import { parseSalaryPeriod } from "@/lib/constants/salary-periods";
+import { parseSalaryCurrency, parseSalaryPeriod, ratePeriodFromSalaryPeriod } from "@/lib/constants/salary-periods";
 import { enqueueJobMatch } from "@/lib/queue/match-queue";
 import { guessMimeType } from "@/lib/upload/mime";
-import { parseJobImportFile } from "@/lib/jobs/parse-job-import";
+import { parseJobImportFileDetailed } from "@/lib/jobs/parse-job-import";
+import {
+  previewCsvJobSync,
+  confirmCsvJobSync,
+  getJobImportBatch,
+} from "@/lib/jobs/csv-job-sync";
 import type { PipelineStage } from "@prisma/client";
 
 const MAX_RESUME_UPLOAD_BYTES = 10 * 1024 * 1024;
@@ -100,6 +106,26 @@ export async function updateJobAction(id: string, formData: FormData) {
   const preferredSkills = parseCommaList(formData.get("preferredSkills"));
   const certifications = parseCommaList(formData.get("certifications"));
   const experienceYears = parseOptionalInt(formData.get("experienceYears"));
+  const emptyToNull = (value: FormDataEntryValue | null) => {
+    const text = ((value as string) || "").trim();
+    return text || null;
+  };
+  const parseOptionalDate = (value: FormDataEntryValue | null) => {
+    const text = ((value as string) || "").trim();
+    return text || null;
+  };
+  const employmentType = emptyToNull(formData.get("employmentType")) as
+    | "FULL_TIME"
+    | "PART_TIME"
+    | "CONTRACT"
+    | "TEMPORARY"
+    | "INTERNSHIP"
+    | "FREELANCE"
+    | "VOLUNTEER"
+    | null;
+  const workplaceType = emptyToNull(formData.get("workplaceType")) as "ON_SITE" | "HYBRID" | "REMOTE" | null;
+  const priority = ((formData.get("priority") as string) || "MEDIUM") as "LOW" | "MEDIUM" | "HIGH" | "URGENT";
+  const salaryPeriod = parseSalaryPeriod(formData.get("salaryPeriod"));
 
   const job = await jobService.updateJob(id, {
     clientId: (formData.get("clientId") as string) || undefined,
@@ -107,14 +133,37 @@ export async function updateJobAction(id: string, formData: FormData) {
     title: formData.get("title") as string,
     description: (formData.get("description") as string) || undefined,
     location: (formData.get("location") as string) || undefined,
-    country: (formData.get("country") as string) || null,
+    country: emptyToNull(formData.get("country")),
+    city: emptyToNull(formData.get("city")),
+    state: emptyToNull(formData.get("state")),
+    zip: emptyToNull(formData.get("zip")),
+    address1: emptyToNull(formData.get("address1")),
+    address2: emptyToNull(formData.get("address2")),
+    department: emptyToNull(formData.get("department")),
+    jobFunction: emptyToNull(formData.get("jobFunction")),
+    seniority: emptyToNull(formData.get("seniority")),
+    employmentType,
+    workplaceType,
+    ownerId: emptyToNull(formData.get("ownerId")),
+    priority,
+    startDate: parseOptionalDate(formData.get("startDate")),
+    endDate: parseOptionalDate(formData.get("endDate")),
+    maxSubmissions: parseOptionalInt(formData.get("maxSubmissions")) ?? null,
+    requireResume: formData.get("requireResume") === "on",
+    travelRequired: formData.get("travelRequired") === "on",
+    otRequired: formData.get("otRequired") === "on",
+    referencesRequired: formData.get("referencesRequired") === "on",
+    drugTestRequired: formData.get("drugTestRequired") === "on",
+    backgroundCheckRequired: formData.get("backgroundCheckRequired") === "on",
+    securityClearanceRequired: formData.get("securityClearanceRequired") === "on",
     referralLink: ((formData.get("referralLink") as string) || "").trim() || null,
     status: formData.get("status") as "OPEN" | "ON_HOLD" | "CLOSED" | "FILLED",
     openings: parseOptionalInt(formData.get("openings")) ?? 1,
     salaryMin: parseOptionalDecimal(formData.get("salaryMin")),
     salaryMax: parseOptionalDecimal(formData.get("salaryMax")),
-    salaryPeriod: parseSalaryPeriod(formData.get("salaryPeriod")),
-    salaryCurrency: ((formData.get("salaryCurrency") as string) || "USD").trim(),
+    salaryPeriod,
+    ratePeriod: ratePeriodFromSalaryPeriod(salaryPeriod),
+    salaryCurrency: parseSalaryCurrency(formData.get("salaryCurrency")),
     experienceMin: experienceYears ?? null,
     preferredQualifications: preferredSkills.length > 0 ? preferredSkills.join(", ") : null,
     requirements: {
@@ -146,6 +195,18 @@ export async function updateJobAction(id: string, formData: FormData) {
     type: "jobs",
   });
   return job;
+}
+
+export async function createJobNoteAction(jobId: string, formData: FormData) {
+  const { createJobNote } = await import("@/lib/services/job-note-service");
+  await createJobNote(jobId, (formData.get("body") as string) || "");
+  await revalidateOrgPaths([`/jobs/${jobId}`], { jobId, type: "jobs" });
+}
+
+export async function deleteJobNoteAction(jobId: string, noteId: string) {
+  const { deleteJobNote } = await import("@/lib/services/job-note-service");
+  await deleteJobNote(noteId);
+  await revalidateOrgPaths([`/jobs/${jobId}`], { jobId, type: "jobs" });
 }
 
 export async function previewBooleanSearchAction(input: {
@@ -249,27 +310,55 @@ export async function updateJobBooleanAction(jobId: string, formData: FormData) 
   });
 }
 
-export async function importJobsAction(formData: FormData) {
+export async function previewJobImportAction(formData: FormData) {
   const file = formData.get("file") as File;
   const format = formData.get("format") as string;
 
   if (!file?.size) throw new Error("No file provided");
 
-  let rows;
+  let parsed;
   try {
-    rows = await parseJobImportFile(file, format);
+    parsed = await parseJobImportFileDetailed(file, format);
   } catch (e) {
     throw new Error(e instanceof Error ? e.message : "Failed to parse import file");
   }
 
-  if (rows.length === 0) {
+  if (parsed.rows.length === 0 && parsed.invalid.length === 0) {
     throw new Error(
-      "No valid job rows found. Need Client (or clientPrefix) and title. Headers like Job Description, Required Skills, Pay, and Refferal Link are supported.",
+      "No job rows found. Need Client, title, and Referral Link. Headers like Job Description, Required Skills, Pay, and Refferal Link are supported.",
     );
   }
 
-  await jobService.importJobs(rows, file.name, format);
-  await revalidateOrgPaths(["/jobs"]);
+  return previewCsvJobSync(parsed, file.name, format || "csv");
+}
+
+export async function confirmJobImportAction(batchId: string) {
+  if (!batchId) throw new Error("Missing import batch id");
+  const result = await confirmCsvJobSync(batchId);
+  if (result.status === "COMPLETED") {
+    await revalidateOrgPaths(["/jobs", "/jobs/import"]);
+  }
+  return result;
+}
+
+export async function getJobImportBatchAction(batchId: string) {
+  return getJobImportBatch(batchId);
+}
+
+/** @deprecated Use previewJobImportAction + confirmJobImportAction */
+export async function importJobsAction(formData: FormData) {
+  const preview = await previewJobImportAction(formData);
+  if (preview.blocked) {
+    throw new Error(
+      preview.blockers[0] ??
+        "Import blocked due to invalid or duplicate Referral Links. Use the Import Jobs preview flow.",
+    );
+  }
+  const result = await confirmJobImportAction(preview.batchId);
+  if (result.status === "FAILED") {
+    throw new Error(result.errorMessage ?? "CSV sync failed");
+  }
+  return result;
 }
 
 export async function createCandidateAction(formData: FormData) {
@@ -278,8 +367,11 @@ export async function createCandidateAction(formData: FormData) {
     firstName: formData.get("firstName") as string,
     lastName: formData.get("lastName") as string,
     email: (formData.get("email") as string) || undefined,
+    altEmail: (formData.get("altEmail") as string) || undefined,
     phone: (formData.get("phone") as string) || undefined,
     phoneCountryCode: (formData.get("phoneCountryCode") as string) || undefined,
+    altPhone: (formData.get("altPhone") as string) || undefined,
+    altPhoneCountryCode: (formData.get("altPhoneCountryCode") as string) || undefined,
     currentRole: (formData.get("currentRole") as string) || undefined,
     currentCompany: (formData.get("currentCompany") as string) || undefined,
     skills,
@@ -290,19 +382,25 @@ export async function createCandidateAction(formData: FormData) {
 
 export async function updateCandidateAction(id: string, formData: FormData) {
   const skills = (formData.get("skills") as string)?.split(",").map((s) => s.trim()).filter(Boolean) ?? [];
+  const yearsRaw = (formData.get("experienceYears") as string)?.trim();
   await candidateService.updateCandidate(id, {
     firstName: formData.get("firstName") as string,
     lastName: formData.get("lastName") as string,
     email: (formData.get("email") as string) || undefined,
+    altEmail: (formData.get("altEmail") as string) || undefined,
     phone: (formData.get("phone") as string) || undefined,
     phoneCountryCode: (formData.get("phoneCountryCode") as string) || undefined,
+    altPhone: (formData.get("altPhone") as string) || undefined,
+    altPhoneCountryCode: (formData.get("altPhoneCountryCode") as string) || undefined,
     linkedIn: (formData.get("linkedIn") as string) || undefined,
     githubUrl: (formData.get("githubUrl") as string) || undefined,
     portfolioUrl: (formData.get("portfolioUrl") as string) || undefined,
+    website: (formData.get("website") as string) || undefined,
+    location: (formData.get("location") as string) || undefined,
     currentRole: (formData.get("currentRole") as string) || undefined,
     currentCompany: (formData.get("currentCompany") as string) || undefined,
     skills,
-    experienceYears: parseInt(formData.get("experienceYears") as string) || undefined,
+    experienceYears: yearsRaw ? Number(yearsRaw) : undefined,
   });
   await revalidateOrgPaths([`/candidates/${id}`, "/candidates"]);
 }
@@ -315,6 +413,11 @@ export async function updateStageAction(applicationId: string, toStage: Pipeline
 export async function addCandidateToJobAction(jobId: string, candidateId: string) {
   await pipelineService.addCandidateToJob(jobId, candidateId);
   await revalidateOrgPaths([`/jobs/${jobId}`], { jobId });
+}
+
+export async function dismissJobMatchAction(jobId: string, candidateId: string) {
+  await pipelineService.dismissJobMatch(jobId, candidateId);
+  await revalidateOrgPaths([`/jobs/${jobId}`, "/matching", `/candidates/${candidateId}`], { jobId });
 }
 
 export async function recomputeMatchesAction(jobId: string) {
@@ -451,6 +554,12 @@ export async function softDeleteCandidateAction(id: string) {
 export async function restoreCandidateAction(id: string) {
   await candidateService.restoreCandidate(id);
   await revalidateOrgPaths(["/candidates/recycle", "/candidates"], { type: "candidates" });
+}
+
+export async function hardDeleteCandidateAction(id: string) {
+  await candidateService.hardDeleteCandidate(id);
+  await revalidateOrgPaths(["/candidates", "/candidates/recycle", "/referrals"], { type: "candidates" });
+  redirect("/candidates");
 }
 
 export async function bulkCandidateAction(
@@ -669,4 +778,79 @@ export async function deleteKnowledgeDocumentAction(id: string) {
   const { deleteKnowledgeDocument } = await import("@/lib/services/knowledge-document-service");
   await deleteKnowledgeDocument(id);
   await revalidateOrgPaths(["/ask"], { organizationId: ctx.organizationId });
+}
+
+export async function saveMicro1ReferralSyncSettingsAction(formData: FormData) {
+  await micro1ReferralService.saveMicro1SyncSettings({
+    email: String(formData.get("email") ?? ""),
+    enabled: formData.getAll("enabled").includes("true"),
+  });
+  await revalidateOrgPaths(["/referrals"]);
+  return { ok: true as const };
+}
+
+export async function requestMicro1OtpAction(email: string) {
+  await micro1ReferralService.requestMicro1Otp(email);
+  return { ok: true as const };
+}
+
+export async function verifyMicro1OtpAction(otp: string) {
+  await micro1ReferralService.verifyMicro1Otp(otp);
+  await revalidateOrgPaths(["/referrals"]);
+  return { ok: true as const };
+}
+
+export async function runMicro1ReferralSyncNowAction() {
+  const result = await micro1ReferralService.runMicro1HourlySyncNow();
+  await revalidateOrgPaths(["/referrals"]);
+  return result;
+}
+
+export async function importMicro1ReferralCsvAction(formData: FormData) {
+  const { importReferralCsvActionData } = await import("@/lib/services/micro1-referral-service");
+  const { DuplicateImportFileError } = await import("@/lib/referrals/micro1-referral-sync");
+  const file = formData.get("file");
+  const force = formData.get("force") === "true";
+  if (!(file instanceof File) || file.size === 0) throw new Error("Choose a CSV file");
+  const bytes = Buffer.from(await file.arrayBuffer());
+  const content = bytes.toString("utf8");
+  try {
+    const result = await importReferralCsvActionData(file.name, content, bytes, force);
+    await revalidateOrgPaths(["/referrals"]);
+    return result;
+  } catch (error) {
+    if (error instanceof DuplicateImportFileError) {
+      return {
+        alreadyImported: true as const,
+        message: error.message,
+        batchId: error.batchId,
+        importedAt: error.importedAt.toISOString(),
+      };
+    }
+    throw error;
+  }
+}
+
+export async function linkMicro1ReferralAction(referralId: string, candidateId: string) {
+  await micro1ReferralService.linkReferralToCandidate(referralId, candidateId);
+  await revalidateOrgPaths(["/referrals"]);
+}
+
+export async function leaveMicro1ReferralUnmatchedAction(referralId: string) {
+  await micro1ReferralService.leaveReferralUnmatched(referralId);
+  await revalidateOrgPaths(["/referrals"]);
+}
+
+export async function deleteMicro1ReferralAction(referralId: string) {
+  await micro1ReferralService.deleteReferralPermanently(referralId);
+  await revalidateOrgPaths(["/referrals"]);
+}
+
+export async function searchMicro1LinkCandidatesAction(query: string) {
+  const result = await micro1ReferralService.searchCandidatesForReferral(query);
+  return result.items.map((item) => ({
+    id: item.id,
+    name: `${item.firstName} ${item.lastName}`,
+    role: item.currentRole,
+  }));
 }

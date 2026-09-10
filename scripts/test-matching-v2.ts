@@ -1,6 +1,6 @@
 /**
- * Matching: Boolean search + location only.
- * Skills, tools, and responsibilities are not scored.
+ * Matching: Boolean search only.
+ * Location, skills, tools, and responsibilities are not scored.
  *
  * Usage: npx tsx scripts/test-matching-v2.ts
  */
@@ -56,13 +56,13 @@ function test(name: string, fn: () => void) {
   }
 }
 
-test("matching ignores skills, tools, and responsibilities for the score", () => {
+test("matching ignores skills, tools, location, and responsibilities for the score", () => {
   const result = computeMatch(baseJob, baseCandidate, undefined, { resumeText });
   assert.equal(result.analysis.sectionScores.requiredSkills.maxScore, 0);
   assert.equal(result.analysis.sectionScores.tools.maxScore, 0);
   assert.equal(result.analysis.sectionScores.responsibilities.maxScore, 0);
   assert.equal(result.analysis.sectionScores.experience.maxScore, 0);
-  assert.ok(result.analysis.sectionScores.location.maxScore > 0);
+  assert.equal(result.analysis.sectionScores.location.maxScore, 0);
   assert.ok((result.analysis.requirementBreakdown?.booleanSearch.maxScore ?? 0) > 0);
 });
 
@@ -75,7 +75,7 @@ test("boolean miss scores 0 and is not persistable", () => {
   assert.equal(isPersistableMatch(result.score, result.analysis), false);
 });
 
-test("missing tools or core skills do not disqualify a boolean+location match", () => {
+test("missing tools or core skills do not disqualify a boolean match", () => {
   const result = computeMatch(baseJob, baseCandidate, undefined, { resumeText });
   assert.equal(result.analysis.booleanSearch?.passes, true);
   assert.ok(result.score >= 60, `expected persistable score, got ${result.score}`);
@@ -84,7 +84,7 @@ test("missing tools or core skills do not disqualify a boolean+location match", 
   assert.equal(result.analysis.criticalMissingRequirements.length, 0);
 });
 
-test("location mismatch is not persistable even when boolean passes", () => {
+test("location mismatch is persistable when boolean passes", () => {
   const candidate = {
     ...baseCandidate,
     city: "Berlin",
@@ -95,14 +95,14 @@ test("location mismatch is not persistable even when boolean passes", () => {
     resumeText: "Senior engineer in Berlin with Python and React.",
   });
   assert.equal(result.analysis.booleanSearch?.passes, true);
-  assert.ok(result.analysis.sectionScores.location.score < result.analysis.sectionScores.location.maxScore * 0.6);
-  assert.equal(isPersistableMatch(result.score, result.analysis), false);
+  assert.equal(result.analysis.sectionScores.location.maxScore, 0);
+  assert.equal(isPersistableMatch(result.score, result.analysis), true);
 });
 
-test("location overlap contributes to the match score", () => {
+test("boolean match scores 100 without location", () => {
   const result = computeMatch(baseJob, baseCandidate, undefined, { resumeText });
-  assert.ok(result.analysis.sectionScores.location.score > 0);
-  assert.match(result.analysis.sectionScores.location.reasoning, /location|austin|united states/i);
+  assert.equal(result.score, 100);
+  assert.equal(result.descriptionMatch, 0);
 });
 
-console.log("\nMatching boolean+location tests passed.");
+console.log("\nMatching boolean-only tests passed.");

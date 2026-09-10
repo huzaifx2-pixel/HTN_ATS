@@ -18,6 +18,12 @@ export function ensureServerSchedulersStarted() {
       console.error("[bootstrap] Failed to start Gmail sync scheduler", error);
     });
 
+  void import("@/lib/jobs/match-outreach-scheduler")
+    .then(({ startMatchOutreachScheduler }) => startMatchOutreachScheduler())
+    .catch((error) => {
+      console.error("[bootstrap] Failed to start match outreach scheduler", error);
+    });
+
   void import("@/lib/jobs/rag-index-scheduler")
     .then(({ startRagIndexScheduler }) => startRagIndexScheduler())
     .catch((error) => {
@@ -28,5 +34,11 @@ export function ensureServerSchedulersStarted() {
     .then(({ startMatchQueueProcessor }) => startMatchQueueProcessor())
     .catch((error) => {
       console.error("[bootstrap] Failed to start match queue processor", error);
+    });
+
+  void import("@/lib/jobs/micro1-referral-sync-scheduler")
+    .then(({ startMicro1ReferralSyncScheduler }) => startMicro1ReferralSyncScheduler())
+    .catch((error) => {
+      console.error("[bootstrap] Failed to start micro1 referral sync scheduler", error);
     });
 }

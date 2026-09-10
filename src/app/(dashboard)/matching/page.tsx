@@ -2,7 +2,8 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Mail, RefreshCw, Briefcase, Send } from "lucide-react";
 import { getActiveOrganization, getSession } from "@/lib/auth/session";
-import { getGmailConnection } from "@/lib/services/gmail-service";
+import { resolveOrgGmailSender } from "@/lib/services/gmail-service";
+import { getOutreachPoolSummary } from "@/lib/services/outreach-mailbox-service";
 import { listEmailTemplates, seedDefaultEmailTemplates } from "@/lib/services/email-service";
 import {
   FOLLOW_UP_AFTER_DAYS,
@@ -47,10 +48,10 @@ export default async function MatchingCandidatesPage({
   const matchCursor = tab === "matches" ? rawCursor : undefined;
   const sentCursor = tab === "sent" ? rawCursor : undefined;
 
-  const { summary, jobs, jobsNextCursor, jobsTotal, followUpGroups, sentEmails, templates, gmail, killSwitch } =
+  const { summary, jobs, jobsNextCursor, jobsTotal, followUpGroups, sentEmails, templates, gmail, sender, killSwitch } =
     await withPagePerf("matching", async () => {
       await seedDefaultEmailTemplates(member.organizationId);
-      const [hubSummary, matchJobs, followUps, sent, emailTemplates, gmailConnection, matchingSwitch] =
+      const [hubSummary, matchJobs, followUps, sent, emailTemplates, outreach, sender, matchingSwitch] =
         await Promise.all([
           getMatchingHubSummary(member.organizationId),
           tab === "matches"
@@ -64,7 +65,15 @@ export default async function MatchingCandidatesPage({
             ? listMatchingSentEmails(member.organizationId, { cursor: sentCursor })
             : Promise.resolve({ items: [], nextCursor: null }),
           listEmailTemplates(member.organizationId),
-          getGmailConnection(session.user.id),
+          getOutreachPoolSummary(member.organizationId).catch(() => ({
+            delayMs: 45_000,
+            pending: 0,
+            mailboxCount: 0,
+            dailyCapacity: 0,
+            remainingToday: 0,
+            sentToday: 0,
+          })),
+          resolveOrgGmailSender(member.organizationId, session.user.id),
           getMatchingKillSwitchState(member.organizationId),
         ]);
       return {
@@ -75,13 +84,17 @@ export default async function MatchingCandidatesPage({
         followUpGroups: followUps,
         sentEmails: sent,
         templates: emailTemplates,
-        gmail: gmailConnection,
+        gmail: outreach,
+        sender,
         killSwitch: matchingSwitch,
       };
     });
 
   const recruiterName = session.user.name ?? "Recruiter";
-  const gmailConnected = Boolean(gmail);
+  const gmailConnected = (gmail?.mailboxCount ?? 0) > 0 || Boolean(sender);
+  const outreachFromLabel = (gmail?.mailboxCount ?? 0) > 0
+    ? `${gmail.mailboxCount} outreach account${gmail.mailboxCount === 1 ? "" : "s"} · ${gmail.remainingToday.toLocaleString()} remaining today`
+    : sender?.email;
   const templatePayload = templates.map((template) => ({
     id: template.id,
     name: template.name,
@@ -162,7 +175,7 @@ export default async function MatchingCandidatesPage({
           pageSize={MATCHING_JOBS_PAGE_SIZE}
           templates={templatePayload}
           gmailConnected={gmailConnected}
-          userEmail={gmail?.email}
+          userEmail={outreachFromLabel}
           recruiterName={recruiterName}
           matchingKilled={killSwitch.killed}
         />
@@ -173,7 +186,7 @@ export default async function MatchingCandidatesPage({
           groups={followUpGroups}
           templates={templatePayload}
           gmailConnected={gmailConnected}
-          userEmail={gmail?.email}
+          userEmail={outreachFromLabel}
           recruiterName={recruiterName}
         />
       )}

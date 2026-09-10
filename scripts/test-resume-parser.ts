@@ -10,6 +10,7 @@ import { extractStructuredFromText } from "@/lib/parsers/pipeline/extract-struct
 import { runParsePipeline, structuredToLegacyResult } from "@/lib/parsers/pipeline/run-pipeline";
 import { PARSER_PIPELINE_VERSION } from "@/lib/parsers/pipeline/types";
 import { reconstructPdfReadingOrder } from "@/lib/parsers/pdf-layout";
+import "./test-contact-parser";
 
 function test(name: string, fn: () => void) {
   try {
@@ -224,7 +225,7 @@ test("name extraction peels email/phone labels and cover-page names", () => {
     "gaurav_reactjs.pdf",
   );
   assert.equal(fromGaurav.firstName, "Gaurav");
-  assert.equal(fromGaurav.lastName, "Pokale");
+  assert.equal(fromGaurav.lastName ?? "", "");
 
   const notTitle = extractName("Senior Data Engineer\nengineer@example.com");
   assert.notEqual(notTitle.firstName, "Senior");

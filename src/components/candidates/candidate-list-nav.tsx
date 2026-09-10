@@ -6,16 +6,24 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ChevronLeft, ChevronRight, List } from "lucide-react";
 import { candidateNavPosition, readCandidateNav } from "@/lib/candidates/search-nav";
 
+function backLabel(returnTo?: string | null) {
+  if (!returnTo) return "Back to Candidates";
+  if (returnTo.includes("/candidates/search")) return "Back to Search";
+  if (returnTo.includes("/candidates/pool")) return "Back to Talent Pool";
+  if (returnTo.includes("/hotlists")) return "Back to Hotlist";
+  return "Back to Candidates";
+}
+
 export function CandidateListNav({
   candidateId,
   variant = "compact",
 }: {
   candidateId: string;
-  variant?: "compact" | "toolbar";
+  variant?: "compact" | "toolbar" | "back" | "pager";
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [nav, setNav] = useState(() => candidateNavPosition(candidateId, readCandidateNav()));
+  const [nav, setNav] = useState<ReturnType<typeof candidateNavPosition>>(null);
 
   useEffect(() => {
     setNav(candidateNavPosition(candidateId, readCandidateNav()));
@@ -27,7 +35,7 @@ export function CandidateListNav({
   }, [searchParams]);
 
   useEffect(() => {
-    if (!nav || variant !== "toolbar") return;
+    if (!nav || (variant !== "toolbar" && variant !== "pager")) return;
     const currentNav = nav;
 
     function onKey(event: KeyboardEvent) {
@@ -49,10 +57,67 @@ export function CandidateListNav({
     return () => window.removeEventListener("keydown", onKey);
   }, [nav, router, tabQuery, variant]);
 
-  if (!nav) return null;
+  if (!nav) {
+    if (variant === "back") {
+      return (
+        <Link
+          href="/candidates"
+          className="whitespace-nowrap text-[12px] font-medium text-[#1e4e8c] hover:underline"
+        >
+          Back to Candidates
+        </Link>
+      );
+    }
+    return null;
+  }
 
   const prevHref = nav.prevId ? `/candidates/${nav.prevId}${tabQuery}` : null;
   const nextHref = nav.nextId ? `/candidates/${nav.nextId}${tabQuery}` : null;
+
+  if (variant === "back") {
+    return (
+      <Link
+        href={nav.returnTo || "/candidates"}
+        className="whitespace-nowrap text-[12px] font-medium text-[#1e4e8c] hover:underline"
+      >
+        {backLabel(nav.returnTo)}
+      </Link>
+    );
+  }
+
+  if (variant === "pager") {
+    return (
+      <div className="flex items-center gap-1">
+        {prevHref ? (
+          <Link
+            href={prevHref}
+            className="rounded border border-[#c5d0dc] bg-white px-2 py-0.5 text-[11px] font-medium text-[#1e4e8c] hover:bg-[#dce6f2]"
+          >
+            Previous
+          </Link>
+        ) : (
+          <span className="rounded border border-transparent px-2 py-0.5 text-[11px] font-medium text-[#1e4e8c] opacity-30">
+            Previous
+          </span>
+        )}
+        <span className="min-w-[4.5rem] px-1 text-center text-[11px] tabular-nums text-[#4b5d73]">
+          {nav.index + 1} of {nav.total}
+        </span>
+        {nextHref ? (
+          <Link
+            href={nextHref}
+            className="rounded border border-[#1e4e8c] bg-[#1e4e8c] px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-[#163a6a]"
+          >
+            Next
+          </Link>
+        ) : (
+          <span className="rounded border border-transparent px-2 py-0.5 text-[11px] font-medium text-[#1e4e8c] opacity-30">
+            Next
+          </span>
+        )}
+      </div>
+    );
+  }
 
   if (variant === "toolbar") {
     return (

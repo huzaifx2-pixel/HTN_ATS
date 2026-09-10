@@ -66,31 +66,25 @@ export function analysisPersistFields(analysis: RecruiterMatchAnalysis) {
 }
 
 const MATCH_PERSIST_THRESHOLD = 60;
-const LOCATION_PERSIST_RATIO = 0.6;
 
 export function matchPersistThreshold() {
   return MATCH_PERSIST_THRESHOLD;
 }
 
 /**
- * Boolean and location are the only membership filters for the match list.
- * Skills, tools, and responsibilities are not used.
+ * Boolean search is the only membership filter for the match list.
+ * Location, skills, tools, and responsibilities are not used.
  */
 export function isPersistableMatch(
   score: number,
   analysis?: {
     booleanSearch?: RecruiterMatchAnalysis["booleanSearch"];
-    sectionScores?: { location?: { score: number; maxScore: number } };
   }
 ) {
   if (score < MATCH_PERSIST_THRESHOLD) return false;
   const booleanSearch = analysis?.booleanSearch;
   if (booleanSearch?.query?.trim() && !booleanSearch.reason?.toLowerCase().includes("invalid")) {
     if (booleanSearch.passes !== true) return false;
-  }
-  const location = analysis?.sectionScores?.location;
-  if (location && location.maxScore > 0 && location.score / location.maxScore < LOCATION_PERSIST_RATIO) {
-    return false;
   }
   return true;
 }

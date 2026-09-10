@@ -1,5 +1,7 @@
+import type { MemberRole } from "@prisma/client";
 import { getShellLayoutData } from "@/lib/services/analytics-service";
 import { getStatusBarSnapshot } from "@/lib/services/status-bar-service";
+import { getRoleFeatures } from "@/lib/services/role-feature-service";
 import { SidebarNav } from "@/components/layout/sidebar-nav";
 import { StatusBarLive, StatusBarFallback } from "@/components/layout/status-bar-live";
 import { TopBar } from "@/components/layout/top-bar";
@@ -13,10 +15,16 @@ export async function ShellSidebar({
   userId: string;
   organizationId: string;
 }) {
-  const data = await getShellLayoutData(userId, organizationId);
+  const role = (user.role as MemberRole | undefined) ?? "RECRUITER";
+  const [data, features] = await Promise.all([
+    getShellLayoutData(userId, organizationId),
+    getRoleFeatures(organizationId, role),
+  ]);
   return (
     <SidebarNav
       user={user}
+      role={role}
+      features={features}
       badges={{
         "/candidates/inbox": data.pendingInboxCount,
         "/messages": data.unreadMessages,

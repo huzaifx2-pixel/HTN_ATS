@@ -337,28 +337,33 @@ export function notifyJobsImported(input: {
   total: number;
   created: number;
   updated: number;
+  reopened?: number;
+  closed?: number;
   importedAt: Date;
 }) {
-  notifyTelegram(
-    [
-      "📥 Jobs Imported",
-      "",
-      "Source:",
-      input.source,
-      "",
-      "Jobs Imported:",
-      String(input.total),
-      "",
-      "New:",
-      String(input.created),
-      "",
-      "Updated:",
-      String(input.updated),
-      "",
-      "Time:",
-      formatTime(input.importedAt),
-    ].join("\n")
-  );
+  const lines = [
+    "📥 Jobs Imported",
+    "",
+    "Source:",
+    input.source,
+    "",
+    "Jobs Imported:",
+    String(input.total),
+    "",
+    "New:",
+    String(input.created),
+    "",
+    "Updated:",
+    String(input.updated),
+  ];
+  if (input.reopened != null) {
+    lines.push("", "Reopened:", String(input.reopened));
+  }
+  if (input.closed != null) {
+    lines.push("", "Closed:", String(input.closed));
+  }
+  lines.push("", "Time:", formatTime(input.importedAt));
+  notifyTelegram(lines.join("\n"));
 }
 
 export function notifyParsingError(input: {

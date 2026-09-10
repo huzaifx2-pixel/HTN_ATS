@@ -31,8 +31,6 @@ import {
   uniqueSorted,
 } from "@/lib/matching/recruiter-engine/text-utils";
 import { parseSkills } from "@/lib/utils";
-import { extractMatchingKeywords } from "@/lib/matching/text-similarity";
-import { evaluateLocationMatch } from "@/lib/matching/location-match";
 import {
   resolveCandidateSkillsForMatching,
   resolveExperienceYearsForMatching,
@@ -50,7 +48,7 @@ import {
   evidenceScoreRatio,
 } from "@/lib/matching/recruiter-engine/evidence";
 
-/** Matching uses Boolean search and location only. Other sections stay inactive. */
+/** Matching uses Boolean search only. Other sections stay inactive. */
 const SECTION_MAX = {
   criticalRequirements: 0,
   jobTitle: 0,
@@ -63,8 +61,8 @@ const SECTION_MAX = {
   certifications: 0,
   tools: 0,
   softSkills: 0,
-  location: 50,
-  booleanSearch: 50,
+  location: 0,
+  booleanSearch: 100,
 } as const;
 
 function inactiveSection(reasoning: string): SectionScoreDetail {
@@ -470,18 +468,6 @@ function scoreSoftSkills(resumeText: string) {
   };
 }
 
-function scoreLocation(job: Job, candidate: Candidate, resumeText: string) {
-  const evaluation = evaluateLocationMatch(job, candidate, resumeText);
-  return {
-    score: roundScore(SECTION_MAX.location * evaluation.scoreRatio),
-    maxScore: SECTION_MAX.location,
-    confidence: evaluation.confidence,
-    reasoning: evaluation.reasoning,
-    matched: evaluation.matched,
-    missing: evaluation.missing,
-  };
-}
-
 function buildDetailedReasoning(entries: Array<{ criterion: string; section: SectionScoreDetail }>): DetailedReasoningEntry[] {
   return entries.map(({ criterion, section }) => ({
     criterion,
@@ -514,7 +500,7 @@ function buildSummary(analysis: Omit<RecruiterMatchAnalysis, "summary">) {
     `Primary strengths: ${strengths}.`,
     `Key risks: ${risks}.`,
     missing,
-    `Boolean coverage: ${analysis.atsKeywords.required.coverage}%. Location alignment: ${analysis.atsKeywords.preferred.coverage}%. Skills, tools, and responsibilities are not used.`,
+    `Boolean coverage: ${analysis.atsKeywords.required.coverage}%. Skills, tools, location, and responsibilities are not used.`,
   ].join(" ");
 }
 
@@ -715,7 +701,7 @@ export function analyzeResumeAgainstJob(input: RecruiterAnalyzeInput): Recruiter
 
   if (booleanQuery) {
     const corpus = buildMatchingResumeCorpus(candidate, { resumeText, parsedResume });
-    const booleanResult = runBooleanSearch(booleanQuery, corpus);
+    const booleanResult = runBooleanSearch(booleanQuery, corpus, job.title);
     if (!booleanResult.ok) {
       booleanAnalysis = {
         query: booleanQuery,
@@ -733,8 +719,8 @@ export function analyzeResumeAgainstJob(input: RecruiterAnalyzeInput): Recruiter
     }
   }
 
-  const unused = inactiveSection("Not used — matching considers Boolean search and location only.");
-  const location = scoreLocation(job, candidate, resumeText);
+  const unused = inactiveSection("Not used — matching considers Boolean search only.");
+  const location = unused;
 
   const booleanInvalid = Boolean(booleanAnalysis?.reason?.toLowerCase().includes("invalid"));
   const booleanActive = Boolean(booleanQuery && booleanAnalysis && !booleanInvalid);
@@ -795,22 +781,15 @@ export function analyzeResumeAgainstJob(input: RecruiterAnalyzeInput): Recruiter
   if (booleanSection.maxScore > 0 && booleanSection.score >= booleanSection.maxScore) {
     strengths.push("Matches the job Boolean search");
   }
-  if (location.maxScore > 0 && location.score >= location.maxScore * 0.75) {
-    strengths.push("Location aligns with the job");
-  }
 
   const risks: string[] = [];
   if (booleanFails) {
     risks.push("Does not match the job Boolean search.");
   }
-  if (location.maxScore > 0 && location.score < location.maxScore * 0.6) {
-    risks.push(location.reasoning);
-  }
   if (risks.length === 0) risks.push("No significant risks identified.");
 
   const detailedReasoning = buildDetailedReasoning([
     { criterion: "Boolean Search", section: booleanSection },
-    { criterion: "Location", section: location },
   ]);
 
   const baseAnalysis = {
@@ -819,7 +798,7 @@ export function analyzeResumeAgainstJob(input: RecruiterAnalyzeInput): Recruiter
     recommendation,
     confidence: notQualified
       ? ("High" as const)
-      : confidenceFromEvidence(location.matched?.[0] ?? booleanSection.matched?.[0] ?? "Not Found", overallScore / 100),
+      : confidenceFromEvidence(booleanSection.matched?.[0] ?? "Not Found", overallScore / 100),
     engineVersion: "v2" as const,
     qualificationStatus,
     sectionScores,
@@ -833,7 +812,7 @@ export function analyzeResumeAgainstJob(input: RecruiterAnalyzeInput): Recruiter
         missing: booleanSection.missing ?? [],
         coverage: booleanSection.maxScore > 0 ? roundScore((booleanSection.score / booleanSection.maxScore) * 100) : 0,
       },
-      preferred: { matched: location.matched ?? [], missing: location.missing ?? [], coverage: sectionPercent(location) },
+      preferred: { matched: [], missing: [], coverage: 0 },
     },
     transferableSkills: [],
     matchedResponsibilities: [],
@@ -867,12 +846,9 @@ export function analysisToLegacyMatchResult(analysis: RecruiterMatchAnalysis) {
     score: analysis.overallScore,
     skillsMatch: booleanPercent,
     experienceMatch: 0,
-    descriptionMatch: sectionPercent(analysis.sectionScores.location),
-    missingSkills: analysis.sectionScores.location.missing ?? [],
-    matchedKeywords: [
-      ...(analysis.booleanSearch?.matchedTerms ?? []),
-      ...(analysis.sectionScores.location.matched ?? []),
-    ],
+    descriptionMatch: 0,
+    missingSkills: [],
+    matchedKeywords: [...(analysis.booleanSearch?.matchedTerms ?? [])],
     reason: analysis.summary.slice(0, 500),
     analysis,
   };

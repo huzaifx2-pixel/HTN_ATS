@@ -84,16 +84,32 @@ function peelNameCandidate(line: string): string {
   return normalizeWhitespace(value);
 }
 
+const NAME_LABEL =
+  /(?:candidate(?:['’]s)?\s+(?:full\s+legal\s+)?name|full\s+name|candidate\s+name|name)\s*:/i;
+const NAME_LABEL_ONLY =
+  /^(?:candidate(?:['’]s)?\s+(?:full\s+legal\s+)?name|full\s+name|candidate\s+name|name)\s*:?\s*$/i;
+const EMAIL_LABEL =
+  /(?:e-?mail(?:\s*(?:id|address))?|emailid|mail\s*id)\s*:?\s*([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i;
+const PHONE_LABEL = /\b(?:phone|mobile|tel(?:ephone)?|contact)\b/i;
+const JOB_PHONE_LINE = /\b(?:duration|project\s*#|organization)\s*:/i;
+
 function lastNameFromEmail(firstName: string, text: string): string | undefined {
   const first = firstName.toLowerCase().replace(/[^a-z]/g, "");
-  if (first.length < 3) return undefined;
+  if (first.length < 2) return undefined;
   for (const email of extractAllEmails(text)) {
-    const local = (email.split("@")[0] ?? "").replace(/[0-9._-]+/g, "").toLowerCase();
-    if (!local.startsWith(first) || local.length < first.length + 3) continue;
-    const rest = local.slice(first.length);
-    if (!/^[a-z]{3,20}$/.test(rest)) continue;
-    if (["engineer", "developer", "gmail", "mail", "email"].includes(rest)) continue;
-    return rest.charAt(0).toUpperCase() + rest.slice(1);
+    const local = (email.split("@")[0] ?? "").toLowerCase();
+    const separator = local.includes(".") ? "." : local.includes("_") ? "_" : null;
+    if (!separator) continue;
+    const tokens = local
+      .split(separator)
+      .map((token) => token.replace(/[0-9]+/g, ""))
+      .filter((token) => /^[a-z]{2,20}$/.test(token));
+    if (tokens.length < 2) continue;
+    if (tokens[0] !== first && !tokens[0].startsWith(first)) continue;
+    const last = tokens[tokens.length - 1];
+    if (!last || last === first) continue;
+    if (["engineer", "developer", "gmail", "mail", "email"].includes(last)) continue;
+    return last.charAt(0).toUpperCase() + last.slice(1);
   }
   return undefined;
 }
@@ -102,9 +118,9 @@ function namePartsFromLine(line: string, allowSingleToken = false) {
   const peeled = peelNameCandidate(line);
   if (!peeled || !looksLikePersonName(peeled)) return null;
   const tokenCount = peeled.split(/\s+/).filter(Boolean).length;
-  const labeled = /(?:candidate(?:['’]s)?\s+(?:full\s+legal\s+)?name|full\s+name|candidate\s+name|name)\s*:/i.test(
-    line,
-  );
+  const labeled = NAME_LABEL.test(line);
+  const titleLeftover = tokenCount < 2 && TRAILING_TITLE.test(normalizeWhitespace(line));
+  if (titleLeftover) return null;
   if (tokenCount < 2 && !labeled && !allowSingleToken) return null;
   return parseNameParts(titleCasePersonName(peeled));
 }
@@ -132,33 +148,38 @@ function extractNameFromText(
     headerBlob,
   );
 
-  for (let i = 0; i < Math.min(lines.length, 30); i++) {
+  const take = (next: NonNullable<ReturnType<typeof parseNameParts>>, index: number, from: string) => {
+    parts = next;
+    lineNo = index + 1;
+    source = from;
+  };
+
+  for (let i = 0; i < Math.min(lines.length, 40); i++) {
     const line = lines[i];
-    const isNameLabel = /^(?:candidate(?:['’]s)?\s+(?:full\s+legal\s+)?name|full\s+name|candidate\s+name|name)\s*:?\s*$/i.test(
-      line,
-    );
-    if (isNameLabel && i + 1 < lines.length) {
+    if (NAME_LABEL_ONLY.test(line) && i + 1 < lines.length) {
       const fromNext = namePartsFromLine(lines[i + 1], true);
       if (fromNext) {
-        parts = fromNext;
-        lineNo = i + 2;
-        source = "Resume Header";
+        take(fromNext, i + 1, "Resume Header");
         break;
       }
     }
+    if (NAME_LABEL.test(line)) {
+      const fromLine = namePartsFromLine(line, true);
+      if (fromLine) {
+        take(fromLine, i, i < 12 ? "Resume Header" : "Resume Body");
+        break;
+      }
+    }
+  }
 
-    const labeled = /(?:candidate(?:['’]s)?\s+(?:full\s+legal\s+)?name|full\s+name|candidate\s+name|name)\s*:/i.test(
-      line,
-    );
-    if (unlabeledNamesUnsafe && !labeled && !isNameLabel) continue;
-    if (!labeled && !isNameLabel && i >= 12) continue;
-
-    const fromLine = namePartsFromLine(line);
-    if (fromLine) {
-      parts = fromLine;
-      lineNo = i + 1;
-      source = i < 3 ? "Resume Header" : "Resume Body";
-      break;
+  if (!parts) {
+    for (let i = 0; i < Math.min(lines.length, 12); i++) {
+      if (unlabeledNamesUnsafe) break;
+      const fromLine = namePartsFromLine(lines[i], i === 0);
+      if (fromLine) {
+        take(fromLine, i, i < 3 ? "Resume Header" : "Resume Body");
+        break;
+      }
     }
   }
 
@@ -219,15 +240,35 @@ function extractNameFromText(
   return { name, line: lineNo };
 }
 
+function headerLines(text: string, count = 12): string {
+  return text.split(/\n/).slice(0, count).join("\n");
+}
+
+function labeledHeaderEmail(text: string): string | undefined {
+  const match = headerLines(text).match(EMAIL_LABEL);
+  return match?.[1] ? normalizeEmail(match[1]) ?? undefined : undefined;
+}
+
+function emailRank(entry: ParsedEmailEntry, labeled?: string): number {
+  let score = 0;
+  if (labeled && entry.value.toLowerCase() === labeled.toLowerCase()) score += 1000;
+  if (entry.source === "Resume Header") score += 200;
+  if (!entry.is_corporate && !entry.is_disposable) score += 150;
+  if (entry.is_disposable) score -= 80;
+  return score + entry.confidence;
+}
+
 function extractEmails(text: string, headerDetected: boolean): ParsedEmailEntry[] {
   const rawEmails = extractAllEmails(text);
+  const header = headerLines(text);
+  const labeled = labeledHeaderEmail(text);
   const entries: ParsedEmailEntry[] = [];
 
   for (let i = 0; i < rawEmails.length; i++) {
     const normalized = normalizeEmail(rawEmails[i]);
     if (!normalized) continue;
     const classification = classifyEmail(normalized);
-    const inHeader = text.slice(0, 800).includes(normalized);
+    const inHeader = header.toLowerCase().includes(normalized.toLowerCase());
     const confidence = inHeader && headerDetected ? 95 : 75 - i * 5;
     const flags: string[] = [];
     if (classification.is_disposable) flags.push("Disposable Email");
@@ -241,7 +282,7 @@ function extractEmails(text: string, headerDetected: boolean): ParsedEmailEntry[
       source: inHeader ? "Resume Header" : "Resume Body",
       normalized: true,
       validated: true,
-      is_primary: i === 0,
+      is_primary: false,
       flags,
       ...classification,
     });
@@ -251,46 +292,79 @@ function extractEmails(text: string, headerDetected: boolean): ParsedEmailEntry[
     return [];
   }
 
-  const corporate = entries.find((e) => e.is_corporate);
-  if (corporate && entries[0] !== corporate) {
-    entries.forEach((e) => (e.is_primary = false));
-    corporate.is_primary = true;
-    entries.sort((a, b) => (a.is_primary ? -1 : b.is_primary ? 1 : 0));
-  }
+  entries.sort((a, b) => emailRank(b, labeled) - emailRank(a, labeled));
+  entries.forEach((entry, index) => {
+    entry.is_primary = index === 0;
+  });
 
   return entries;
 }
 
+function phoneContext(text: string, raw: string): { line: string; index: number } | undefined {
+  const digits = raw.replace(/\D/g, "");
+  const needle = digits.slice(0, 10);
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].replace(/\D/g, "").includes(needle)) {
+      return { line: lines[i], index: i };
+    }
+  }
+  return undefined;
+}
+
+function shouldSkipPhone(line: string, raw: string): boolean {
+  const digits = raw.replace(/\D/g, "");
+  if (/^(?:19|20)\d{2}$/.test(digits)) return true;
+  if (digits.length === 5) return true;
+  if (JOB_PHONE_LINE.test(line)) return true;
+  return false;
+}
+
+function phoneRank(line: string, index: number, headerDetected: boolean): number {
+  let score = 0;
+  if (index < 12) score += 200;
+  if (PHONE_LABEL.test(line)) score += 400;
+  if (headerDetected && index < 12) score += 50;
+  return score - index;
+}
+
 function extractPhones(text: string, headerDetected: boolean): ParsedPhoneEntry[] {
   const rawPhones = extractAllPhones(text);
-  const entries: ParsedPhoneEntry[] = [];
+  const scored: Array<{ entry: ParsedPhoneEntry; rank: number }> = [];
 
   for (let i = 0; i < rawPhones.length; i++) {
     const raw = rawPhones[i];
     const parsed = normalizePhone(raw);
     if (!parsed) continue;
-    const inHeader = text.slice(0, 800).includes(raw.replace(/\s/g, "").slice(0, 6));
+    const context = phoneContext(text, raw);
+    if (context && shouldSkipPhone(context.line, raw)) continue;
+    const inHeader = (context?.index ?? 99) < 12;
     const flags: string[] = [];
     if (i > 0) flags.push("Multiple Phones");
     if (raw.replace(/\D/g, "").length < 10) flags.push("Short Number");
 
-    entries.push({
-      value: raw,
-      normalized: parsed.normalized,
-      confidence: inHeader && headerDetected ? 90 : 70 - i * 5,
-      source: inHeader ? "Resume Header" : "Resume Body",
-      normalized_field: true,
-      validated: true,
-      country_code: parsed.country_code,
-      area_code: parsed.area_code,
-      national_number: parsed.national_number,
-      extension: parsed.extension,
-      phone_type: "unknown",
-      country: parsed.country,
-      flags,
+    scored.push({
+      rank: phoneRank(context?.line ?? "", context?.index ?? 99, headerDetected),
+      entry: {
+        value: raw,
+        normalized: parsed.normalized,
+        confidence: inHeader && headerDetected ? 90 : 70 - i * 5,
+        source: inHeader ? "Resume Header" : "Resume Body",
+        normalized_field: true,
+        validated: true,
+        country_code: parsed.country_code,
+        area_code: parsed.area_code,
+        national_number: parsed.national_number,
+        extension: parsed.extension,
+        phone_type: "unknown",
+        country: parsed.country,
+        flags,
+      },
     });
   }
-  return entries;
+
+  scored.sort((a, b) => b.rank - a.rank);
+  return scored.map((item) => item.entry);
 }
 
 function extractLinkedIn(text: string): ParsedProfileLink | undefined {

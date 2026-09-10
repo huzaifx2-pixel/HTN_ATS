@@ -8,6 +8,7 @@ import { MatchAnalysisPanel } from "@/components/jobs/match-analysis-panel";
 import { MatchWhySummary, type MatchWhyData } from "@/components/jobs/match-why-summary";
 import { MatchCandidateEmail } from "@/components/jobs/match-candidate-email";
 import { addCandidateToJobAction } from "@/app/actions";
+import { DismissMatchButton } from "@/components/jobs/dismiss-match-button";
 
 type MatchRow = {
   id: string;
@@ -54,7 +55,7 @@ export function ReferralMatchesPanel({
           />
         ) : (
           matches.map((m) => (
-            <div key={m.id} className="flex items-center justify-between rounded-lg border p-3 gap-3">
+            <div key={m.id} className="flex items-start justify-between rounded-lg border p-3 gap-3">
               <div className="min-w-0">
                 <Link href={`/candidates/${m.candidateId}`} className="font-medium text-sm text-brand-700 hover:underline">
                   {m.candidate.firstName} {m.candidate.lastName}
@@ -74,7 +75,14 @@ export function ReferralMatchesPanel({
                 />
               </div>
               <div className="text-right shrink-0 flex flex-col items-end gap-2">
-                <MatchScoreBadge score={m.score} status={m.matchStatus} />
+                <div className="flex items-start gap-1">
+                  <MatchScoreBadge score={m.score} status={m.matchStatus} />
+                  <DismissMatchButton
+                    jobId={jobId}
+                    candidateId={m.candidateId}
+                    candidateName={`${m.candidate.firstName} ${m.candidate.lastName}`.trim()}
+                  />
+                </div>
                 <div className="flex gap-2">
                   <MatchCandidateEmail
                     {...emailProps}

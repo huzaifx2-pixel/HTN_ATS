@@ -24,8 +24,10 @@ export async function registerNode() {
 
   const { startWebsiteJobSyncScheduler } = await import("@/lib/jobs/website-sync-scheduler");
   const { startGmailSyncScheduler } = await import("@/lib/jobs/gmail-sync-scheduler");
+  const { startMatchOutreachScheduler } = await import("@/lib/jobs/match-outreach-scheduler");
   startWebsiteJobSyncScheduler();
   startGmailSyncScheduler();
+  startMatchOutreachScheduler();
   const { startMarketingSchedulers } = await import("@/lib/jobs/marketing-scheduler");
   startMarketingSchedulers();
   const { startMatchQueueProcessor } = await import("@/lib/queue/match-processor");

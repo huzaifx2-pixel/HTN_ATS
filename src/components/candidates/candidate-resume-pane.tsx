@@ -2,13 +2,12 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ChevronDown, ChevronRight, Download, Mail, Printer, Upload } from "lucide-react";
+import { ChevronDown, ChevronRight, Mail, Printer } from "lucide-react";
 import { ResumeViewer } from "@/components/shared/feature-components";
 import { UpdateResumeForm } from "@/components/candidates/update-resume-form";
 import { highlightSkillTerms } from "@/lib/candidates/profile-view-data";
 import { formatJobTimestamp } from "@/lib/utils";
 
-const VERSION_PANEL_KEY = "headsbase.resumeVersionsOpen";
 const DETAILS_PANEL_KEY = "headsbase.resumeDetailsOpen";
 
 function HighlightedText({ text, skills }: { text: string; skills: string[] }) {
@@ -43,7 +42,6 @@ export function CandidateResumePane({
   downloadUrl,
   fileName,
   mimeType,
-  documents,
 }: {
   candidateId: string;
   name: string;
@@ -60,42 +58,17 @@ export function CandidateResumePane({
   downloadUrl?: string;
   fileName?: string;
   mimeType?: string;
-  documents: Array<{
-    id: string;
-    fileName: string;
-    isLatest: boolean;
-    createdAt: Date;
-    storageKey: string;
-    version?: number;
-  }>;
 }) {
-  const resumes = documents.filter((doc) => doc.storageKey);
-  const [versionsOpen, setVersionsOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
 
   useEffect(() => {
     try {
-      const storedVersions = window.sessionStorage.getItem(VERSION_PANEL_KEY);
-      if (storedVersions === "0") setVersionsOpen(false);
-      if (storedVersions === "1") setVersionsOpen(true);
       const storedDetails = window.sessionStorage.getItem(DETAILS_PANEL_KEY);
       if (storedDetails === "1") setDetailsOpen(true);
     } catch {
       // ignore storage errors
     }
   }, []);
-
-  function toggleVersions() {
-    setVersionsOpen((open) => {
-      const next = !open;
-      try {
-        window.sessionStorage.setItem(VERSION_PANEL_KEY, next ? "1" : "0");
-      } catch {
-        // ignore storage errors
-      }
-      return next;
-    });
-  }
 
   function toggleDetails() {
     setDetailsOpen((open) => {
@@ -120,11 +93,6 @@ export function CandidateResumePane({
         >
           <Printer className="h-4 w-4" />
         </button>
-        {downloadUrl ? (
-          <a href={downloadUrl} download={fileName} className="rounded p-1 text-[#1e4e8c] hover:bg-[#dce6f2]" title="Download">
-            <Download className="h-4 w-4" />
-          </a>
-        ) : null}
         <Link href={`/candidates/${candidateId}?tab=email`} className="rounded p-1 text-[#1e4e8c] hover:bg-[#dce6f2]" title="Email">
           <Mail className="h-4 w-4" />
         </Link>
@@ -134,38 +102,6 @@ export function CandidateResumePane({
         <span className="ml-auto truncate pl-2 text-[11px] text-[#4b5d73]" title={fileName ?? undefined}>
           {fileName ?? "No file"}
         </span>
-        {resumes.length > 0 ? (
-          <div className="relative shrink-0">
-            <button
-              type="button"
-              onClick={toggleVersions}
-              className="ml-1 flex items-center gap-0.5 rounded border border-[#c5d0dc] bg-white px-1.5 py-0.5 text-[11px] font-medium text-[#1e4e8c] hover:bg-[#e8eef5]"
-              title={versionsOpen ? "Hide resume versions" : "Show resume versions"}
-              aria-expanded={versionsOpen}
-            >
-              {resumes.length} Resume{resumes.length === 1 ? "" : "s"}
-              {versionsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-            </button>
-            {versionsOpen ? (
-              <ul className="absolute right-0 top-full z-20 mt-1 w-52 overflow-hidden rounded border border-[#b8c4d4] bg-white text-[11px] shadow-lg">
-                {resumes.map((doc) => (
-                  <li key={doc.id} className="flex items-center justify-between gap-1 border-b border-[#eef3f8] px-2 py-1.5 last:border-b-0">
-                    <a
-                      href={`/api/files/${doc.storageKey}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="truncate text-[#1e4e8c] hover:underline"
-                    >
-                      {formatJobTimestamp(doc.createdAt)}
-                      {doc.isLatest ? " · latest" : ""}
-                    </a>
-                    <Upload className="h-3 w-3 shrink-0 text-[#7a8b9c]" />
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-          </div>
-        ) : null}
       </div>
 
       <button

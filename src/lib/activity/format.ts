@@ -5,6 +5,10 @@ const JOB_ACTION_LABELS: Record<string, string> = {
   "job.published": "Published job",
   "job.website_imported": "Imported from website",
   "job.website_removed": "Removed from website",
+  "job.csv_imported": "Imported from CSV sync",
+  "job.csv_updated": "Updated from CSV sync",
+  "job.csv_removed": "Closed — missing from CSV sync",
+  "job.csv_reopened": "Reopened from CSV sync",
   "job.auto_email_sent": "Sent auto-emails",
 };
 
@@ -17,6 +21,13 @@ const CANDIDATE_ACTION_LABELS: Record<string, string> = {
   "stage.changed": "Changed pipeline stage",
   "email.sent": "Sent email",
   "email.auto_sent": "Sent auto-email",
+  "micro1.applying": "Referred to micro1",
+  "micro1.ai_interview": "AI Interview completed",
+  "micro1.criteria_met": "Criteria Met",
+  "micro1.certified": "Certified",
+  "micro1.matched": "Matched to project",
+  "micro1.started": "Started",
+  "micro1.successful": "Successful",
 };
 
 const MARKETING_ACTION_LABELS: Record<string, string> = {
@@ -50,7 +61,7 @@ export function formatActivityAction(action: string, metadata?: unknown): string
     if (action === "job.updated") return describeJobUpdate(metadata);
     return JOB_ACTION_LABELS[action] ?? titleCase(action);
   }
-  if (action.startsWith("candidate.") || action.startsWith("resume.") || action.startsWith("email.") || action.startsWith("stage.")) {
+  if (action.startsWith("candidate.") || action.startsWith("resume.") || action.startsWith("email.") || action.startsWith("stage.") || action.startsWith("micro1.")) {
     return CANDIDATE_ACTION_LABELS[action] ?? titleCase(action);
   }
   return titleCase(action);
@@ -65,6 +76,7 @@ export function isCandidateActivityAction(action: string) {
     action.startsWith("candidate.") ||
     action.startsWith("resume.") ||
     action.startsWith("email.") ||
-    action.startsWith("stage.")
+    action.startsWith("stage.") ||
+    action.startsWith("micro1.")
   );
 }

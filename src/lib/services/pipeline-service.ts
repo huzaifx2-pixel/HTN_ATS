@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { PipelineStage, Prisma } from "@prisma/client";
 import type { RecruiterMatchAnalysis } from "@/lib/matching/recruiter-engine/types";
 import { markCandidateEngaged } from "@/lib/services/candidate-service";
+import { isMatchAnalysisDismissed } from "@/lib/matching/match-dismissed";
 
 export async function getJobApplications(jobId: string, organizationId: string) {
   const job = await prisma.job.findFirst({ where: { id: jobId, organizationId } });
@@ -23,12 +24,43 @@ export async function getJobApplications(jobId: string, organizationId: string) 
           lastName: true,
           currentRole: true,
           email: true,
+          city: true,
+          location: true,
+          country: true,
         },
       },
       stageHistory: { orderBy: { changedAt: "desc" }, take: 5 },
     },
     orderBy: { updatedAt: "desc" },
   });
+}
+
+export async function getJobMatchScoreBuckets(jobId: string, organizationId: string) {
+  const job = await prisma.job.findFirst({
+    where: { id: jobId, organizationId },
+    select: { id: true },
+  });
+  if (!job) {
+    return { total: 0, high: 0, medium: 0, low: 0, goodMatchPercent: 0 };
+  }
+
+  const rows = await prisma.$queryRaw<
+    Array<{ total: number; high: number; medium: number; low: number }>
+  >`
+    SELECT
+      COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE score >= 80)::int AS high,
+      COUNT(*) FILTER (WHERE score >= 60 AND score < 80)::int AS medium,
+      COUNT(*) FILTER (WHERE score < 60)::int AS low
+    FROM "JobMatch"
+    WHERE "jobId" = ${jobId}
+      AND (analysis IS NULL OR (analysis::jsonb #>> '{dismissed}') IS DISTINCT FROM 'true')
+  `;
+
+  const stats = rows[0] ?? { total: 0, high: 0, medium: 0, low: 0 };
+  const good = stats.high + stats.medium;
+  const goodMatchPercent = stats.total > 0 ? Math.round((good / stats.total) * 100) : 0;
+  return { ...stats, goodMatchPercent };
 }
 
 const MATCH_LIST_LIMIT = 50;
@@ -54,6 +86,10 @@ const jobMatchListSelect = {
       lastName: true,
       currentRole: true,
       email: true,
+      city: true,
+      location: true,
+      country: true,
+      skills: true,
     },
   },
 } satisfies Prisma.JobMatchSelect;
@@ -177,12 +213,14 @@ export async function getJobMatches(
     total = rows.length;
   }
 
+  rows = rows.filter((row) => !isMatchAnalysisDismissed(row.analysis));
+
   const hasMore = rows.length > MATCH_LIST_LIMIT;
   const page = hasMore ? rows.slice(0, MATCH_LIST_LIMIT) : rows;
   const stale = page.some((row) => analysisUsesOldSkillEngine(row.analysis as RecruiterMatchAnalysis | null));
   if (stale) {
     const { enqueueJobMatch } = await import("@/lib/queue/match-queue");
-    enqueueJobMatch(organizationId, jobId, "boolean-location-engine", { force: true }).catch((error) => {
+    enqueueJobMatch(organizationId, jobId, "boolean-engine", { force: true }).catch((error) => {
       console.warn("[matching] failed to queue Boolean+location rematch:", error);
     });
   }
@@ -226,6 +264,7 @@ export async function getOpenMatchEmailRecipients(jobId: string, organizationId:
     },
     select: {
       candidateId: true,
+      analysis: true,
       candidate: { select: { firstName: true, lastName: true, email: true } },
     },
     orderBy: [{ score: "desc" }, { id: "desc" }],
@@ -233,13 +272,70 @@ export async function getOpenMatchEmailRecipients(jobId: string, organizationId:
   });
 
   const recipients = matches
-    .filter((row) => row.candidate.email?.trim())
+    .filter((row) => row.candidate.email?.trim() && !isMatchAnalysisDismissed(row.analysis))
     .map((row) => ({
       candidateId: row.candidateId,
       name: `${row.candidate.firstName} ${row.candidate.lastName}`.trim(),
       email: row.candidate.email!.trim(),
     }));
   return recipients;
+}
+
+export async function dismissJobMatch(jobId: string, candidateId: string) {
+  const ctx = await requirePermission("edit_job");
+
+  const match = await prisma.jobMatch.findFirst({
+    where: {
+      jobId,
+      candidateId,
+      job: { organizationId: ctx.organizationId },
+    },
+    select: {
+      id: true,
+      analysis: true,
+      candidate: { select: { firstName: true, lastName: true } },
+    },
+  });
+  if (!match || isMatchAnalysisDismissed(match.analysis)) throw new Error("Match not found");
+
+  const analysis =
+    match.analysis && typeof match.analysis === "object" && !Array.isArray(match.analysis)
+      ? { ...(match.analysis as Record<string, unknown>), dismissed: true }
+      : { dismissed: true };
+
+  await prisma.jobMatch.update({
+    where: { id: match.id },
+    data: { analysis },
+  });
+
+  try {
+    await prisma.$executeRaw`
+      UPDATE "JobMatch"
+      SET "dismissedAt" = NOW()
+      WHERE id = ${match.id}
+    `;
+  } catch (error) {
+    console.warn("[matching] could not set dismissedAt column:", error);
+  }
+
+  await prisma.jobActivity.create({
+    data: {
+      jobId,
+      action: "match.dismissed",
+      metadata: {
+        candidateId,
+        candidateName: `${match.candidate.firstName} ${match.candidate.lastName}`.trim(),
+      },
+    },
+  });
+
+  await prisma.candidateActivity.create({
+    data: {
+      candidateId,
+      action: "match.dismissed",
+      metadata: { jobId },
+    },
+  });
 }
 
 export async function addCandidateToJob(jobId: string, candidateId: string, stage?: PipelineStage) {

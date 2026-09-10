@@ -5,7 +5,7 @@ import { uploadOrganizationFile } from "@/lib/storage/document-storage";
 import { getResumeParser } from "@/lib/parsers";
 import { candidateMatchInputsChanged } from "@/lib/matching/match-input";
 import { generateDedupeHash } from "@/lib/utils";
-import { candidateEmploymentFields, candidateIdentityFields, candidateLocationFields, candidatePhoneFields, mergeCandidateMetadata, parsedHeadline, parseOverrideKeys, resolvedParsedIdentity } from "@/lib/parsers/candidate-fields";
+import { candidateEmploymentFields, candidateIdentityFields, candidateLocationFields, candidatePhoneFields, candidateAltContactFields, mergeCandidateMetadata, mergeParsedContactColumns, parsedHeadline, parseOverrideKeys, resolvedParsedIdentity, setParseOverrides } from "@/lib/parsers/candidate-fields";
 import { persistStructuredParse } from "@/lib/parsers/persist-parsed-resume";
 import { enqueueCandidateMatch } from "@/lib/queue/match-queue";
 import { upsertCandidateSearchIndex } from "@/lib/search/search-index";
@@ -66,8 +66,11 @@ export const createCandidateSchema = z.object({
   firstName: z.string().min(1),
   lastName: z.string().min(1),
   email: z.string().email().optional(),
+  altEmail: z.string().email().optional(),
   phone: z.string().optional(),
   phoneCountryCode: z.string().optional(),
+  altPhone: z.string().optional(),
+  altPhoneCountryCode: z.string().optional(),
   linkedIn: z.string().optional(),
   githubUrl: z.string().optional(),
   portfolioUrl: z.string().optional(),
@@ -78,7 +81,10 @@ export const createCandidateSchema = z.object({
   source: z.enum(["MANUAL", "UPLOAD", "BULK_UPLOAD", "GMAIL", "IMPORT", "REFERRAL", "LINKEDIN"]).default("MANUAL"),
 });
 
-export const updateCandidateSchema = createCandidateSchema.omit({ source: true });
+export const updateCandidateSchema = createCandidateSchema.omit({ source: true }).extend({
+  location: z.string().optional(),
+  website: z.string().optional(),
+});
 
 const CANDIDATE_LIST_SELECT = {
   id: true,
@@ -306,6 +312,7 @@ export async function getCandidate(id: string, organizationId: string) {
             id: true,
             jobId: true,
             stage: true,
+            createdAt: true,
             job: {
               select: {
                 id: true,
@@ -348,7 +355,11 @@ export async function createCandidate(input: z.infer<typeof createCandidateSchem
     data: {
       organizationId: ctx.organizationId,
       ...data,
+      email: sanitizeCandidateEmail(data.email) ?? null,
+      altEmail: sanitizeCandidateEmail(data.altEmail) ?? null,
       phoneCountryCode: normalizePhoneCountryCode(data.phoneCountryCode) ?? null,
+      altPhone: data.altPhone?.trim() || null,
+      altPhoneCountryCode: normalizePhoneCountryCode(data.altPhoneCountryCode) ?? null,
       dedupeHash,
       ...identity,
       engagedAt: new Date(),
@@ -403,23 +414,40 @@ export async function updateCandidate(id: string, input: z.infer<typeof updateCa
     }
   }
 
+  const overrideKeys: string[] = [];
+  if (data.firstName !== existing.firstName) overrideKeys.push("firstName");
+  if (data.lastName !== existing.lastName) overrideKeys.push("lastName");
+  if ((data.email ?? null) !== existing.email) overrideKeys.push("email");
+  if ((data.phone ?? null) !== existing.phone) overrideKeys.push("phone");
+  if ((sanitizeCandidateLocation(data.location) ?? null) !== existing.location) {
+    overrideKeys.push("location", "city", "country");
+  }
+
   const candidate = await prisma.candidate.update({
     where: { id },
     data: {
       firstName: data.firstName,
       lastName: data.lastName,
       email: data.email ?? null,
+      altEmail: sanitizeCandidateEmail(data.altEmail) ?? null,
       phone: data.phone ?? null,
       phoneCountryCode: normalizePhoneCountryCode(data.phoneCountryCode) ?? null,
+      altPhone: data.altPhone?.trim() || null,
+      altPhoneCountryCode: normalizePhoneCountryCode(data.altPhoneCountryCode) ?? null,
       linkedIn: data.linkedIn ?? null,
       githubUrl: data.githubUrl ?? null,
       portfolioUrl: data.portfolioUrl ?? null,
       currentCompany: data.currentCompany ?? null,
       currentRole: data.currentRole ?? null,
+      location: sanitizeCandidateLocation(data.location) ?? null,
+      website: data.website?.trim() || null,
       skills: data.skills as object,
       experienceYears: data.experienceYears ?? null,
       dedupeHash,
       ...identityFields(data),
+      ...(overrideKeys.length > 0
+        ? { metadata: setParseOverrides(existing.metadata, overrideKeys) as object }
+        : {}),
     },
   });
 
@@ -451,13 +479,39 @@ async function applyParsedToCandidate(
   parsed: ParsedResumeResult,
   existingMetadata?: unknown
 ) {
-  const overrides = parseOverrideKeys(existingMetadata);
+  const existing = await prisma.candidate.findUnique({
+    where: { id: candidateId },
+    select: {
+      email: true,
+      phone: true,
+      phoneCountryCode: true,
+      location: true,
+      city: true,
+      country: true,
+      workAuthorization: true,
+      availability: true,
+      firstName: true,
+      lastName: true,
+      metadata: true,
+    },
+  });
+  const overrides = parseOverrideKeys(existing?.metadata ?? existingMetadata);
   const employment = candidateEmploymentFields(parsed);
+  const identity = existing
+    ? candidateIdentityFields(parsed, existing, overrides)
+    : {};
   await prisma.candidate.update({
     where: { id: candidateId },
     data: {
-      email: sanitizeCandidateEmail(parsed.email) ?? undefined,
-      ...candidatePhoneFields(parsed),
+      ...identity,
+      ...(existing
+        ? mergeParsedContactColumns(parsed, existing, overrides)
+        : {
+            email: sanitizeCandidateEmail(parsed.email) ?? undefined,
+            ...candidatePhoneFields(parsed),
+            ...candidateLocationFields(parsed),
+          }),
+      ...candidateAltContactFields(parsed),
       linkedIn: parsed.linkedIn ?? undefined,
       githubUrl: parsed.githubUrl ?? undefined,
       portfolioUrl: parsed.portfolioUrl ?? undefined,
@@ -468,9 +522,8 @@ async function applyParsedToCandidate(
       ...(overrides.has("experienceYears") ? { experienceYears: undefined, yearsExperience: undefined } : {}),
       headline: parsedHeadline(parsed),
       summary: parsed.summary ?? undefined,
-      ...candidateLocationFields(parsed),
       skills: parsed.skills as object,
-      metadata: mergeCandidateMetadata(existingMetadata, parsed.contact, parsed.structured),
+      metadata: mergeCandidateMetadata(existing?.metadata ?? existingMetadata, parsed.contact, parsed.structured),
     },
   });
 
@@ -557,18 +610,35 @@ async function mergeParsedResumeIntoCandidate(
   const overrides = parseOverrideKeys(candidate.metadata);
   const employment = candidateEmploymentFields(parsed);
   const identity = candidateIdentityFields(parsed, candidate, overrides, fileName);
+  const contactColumns = mergeParsedContactColumns(parsed, candidate, overrides);
   const normalized = identityFields({
-    email: sanitizeCandidateEmail(parsed.email) ?? candidate.email,
-    phone: parsed.phone ?? candidate.phone,
+    email: contactColumns.email ?? candidate.email,
+    phone: contactColumns.phone ?? candidate.phone,
     linkedIn: parsed.linkedIn ?? candidate.linkedIn,
   });
+  const colliding = normalized.normalizedEmail
+    ? await prisma.candidate.findFirst({
+        where: {
+          organizationId,
+          normalizedEmail: normalized.normalizedEmail,
+          deletedAt: null,
+          NOT: { id: candidateId },
+        },
+        select: { id: true },
+      })
+    : null;
+  const skipEmailWrite = Boolean(colliding?.id);
+  const safeContactColumns = skipEmailWrite ? { ...contactColumns, email: candidate.email } : contactColumns;
+  const safeNormalized = skipEmailWrite
+    ? { ...normalized, normalizedEmail: candidate.normalizedEmail }
+    : normalized;
   await prisma.candidate.update({
     where: { id: candidateId },
     data: {
       ...identity,
-      ...normalized,
-      email: sanitizeCandidateEmail(parsed.email) ?? candidate.email,
-      ...candidatePhoneFields(parsed),
+      ...safeNormalized,
+      ...safeContactColumns,
+      ...candidateAltContactFields(parsed),
       linkedIn: parsed.linkedIn ?? candidate.linkedIn,
       githubUrl: parsed.githubUrl ?? candidate.githubUrl,
       portfolioUrl: parsed.portfolioUrl ?? candidate.portfolioUrl,
@@ -582,7 +652,6 @@ async function mergeParsedResumeIntoCandidate(
         : (employment.yearsExperience ?? candidate.yearsExperience),
       headline: parsedHeadline(parsed) ?? candidate.headline,
       summary: parsed.summary ?? candidate.summary,
-      ...candidateLocationFields(parsed),
       skills: (parsed.skills as object) ?? candidate.skills ?? undefined,
       metadata: mergeCandidateMetadata(candidate.metadata, parsed.contact, parsed.structured),
     },
@@ -687,41 +756,52 @@ export async function uploadAndParseResume(
     parsed.email,
     `${firstName} ${lastName}`
   );
+  const parsedNorm = identityFields({ email: parsed.email }).normalizedEmail;
+  const emailOwner = parsedNorm
+    ? await prisma.candidate.findFirst({
+        where: {
+          organizationId: ctx.organizationId,
+          normalizedEmail: parsedNorm,
+          deletedAt: null,
+        },
+      })
+    : null;
+  const hashMatch = dedupeHash
+    ? await prisma.candidate.findFirst({
+        where: { organizationId: ctx.organizationId, dedupeHash, deletedAt: null },
+      })
+    : null;
+  const existing = emailOwner ?? hashMatch;
 
-  if (dedupeHash) {
-    const existing = await prisma.candidate.findFirst({
-      where: { organizationId: ctx.organizationId, dedupeHash, deletedAt: null },
+  if (existing) {
+    const uploaded = await uploadOrganizationFile(
+      ctx.organizationId,
+      file,
+      fileName,
+      mimeType,
+      "RESUME",
+    );
+    await mergeParsedResumeIntoCandidate(
+      existing.id,
+      ctx.organizationId,
+      parsed,
+      uploaded,
+      fileName,
+      mimeType,
+      source,
+    );
+    await markCandidateEngaged(existing.id, ctx.organizationId);
+    await logResumeImport({
+      organizationId: ctx.organizationId,
+      candidateId: existing.id,
+      fileName,
+      fileHash,
+      source,
+      status: "DUPLICATE",
+      durationMs: Date.now() - started,
+      duplicateOfId: existing.id,
     });
-    if (existing) {
-      const uploaded = await uploadOrganizationFile(
-        ctx.organizationId,
-        file,
-        fileName,
-        mimeType,
-        "RESUME"
-      );
-      await mergeParsedResumeIntoCandidate(
-        existing.id,
-        ctx.organizationId,
-        parsed,
-        uploaded,
-        fileName,
-        mimeType,
-        source
-      );
-      await markCandidateEngaged(existing.id, ctx.organizationId);
-      await logResumeImport({
-        organizationId: ctx.organizationId,
-        candidateId: existing.id,
-        fileName,
-        fileHash,
-        source,
-        status: "DUPLICATE",
-        durationMs: Date.now() - started,
-        duplicateOfId: existing.id,
-      });
-      return { candidate: existing, duplicate: true, updated: true };
-    }
+    return { candidate: existing, duplicate: true, updated: true };
   }
 
   const uploaded = await uploadOrganizationFile(
@@ -732,13 +812,16 @@ export async function uploadAndParseResume(
     "RESUME"
   );
 
-  const candidate = await prisma.candidate.create({
+  let candidate;
+  try {
+    candidate = await prisma.candidate.create({
     data: {
       organizationId: ctx.organizationId,
       firstName,
       lastName,
       email: sanitizeCandidateEmail(parsed.email) ?? null,
       ...candidatePhoneFields(parsed),
+      ...candidateAltContactFields(parsed),
       linkedIn: parsed.linkedIn,
       githubUrl: parsed.githubUrl,
       portfolioUrl: parsed.portfolioUrl,
@@ -773,6 +856,42 @@ export async function uploadAndParseResume(
     },
     include: { parsedResume: true, documents: true, candidateSkills: { include: { skill: true } } },
   });
+  } catch (error) {
+    const prismaCode = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : "";
+    if (prismaCode === "P2002" && parsedNorm) {
+      const owner = await prisma.candidate.findFirst({
+        where: {
+          organizationId: ctx.organizationId,
+          normalizedEmail: parsedNorm,
+          deletedAt: null,
+        },
+      });
+      if (owner) {
+        await mergeParsedResumeIntoCandidate(
+          owner.id,
+          ctx.organizationId,
+          parsed,
+          uploaded,
+          fileName,
+          mimeType,
+          source,
+        );
+        await markCandidateEngaged(owner.id, ctx.organizationId);
+        await logResumeImport({
+          organizationId: ctx.organizationId,
+          candidateId: owner.id,
+          fileName,
+          fileHash,
+          source,
+          status: "DUPLICATE",
+          durationMs: Date.now() - started,
+          duplicateOfId: owner.id,
+        });
+        return { candidate: owner, duplicate: true, updated: true };
+      }
+    }
+    throw error;
+  }
 
   if (parsed.structured) {
     await persistStructuredParse(candidate.id, parsed.structured);
@@ -1005,6 +1124,22 @@ export async function softDeleteCandidate(id: string) {
     where: { id, organizationId: ctx.organizationId },
     data: { deletedAt: new Date() },
   });
+}
+
+export async function hardDeleteCandidate(id: string) {
+  const ctx = await requirePermission("edit_job");
+  const candidate = await prisma.candidate.findFirst({
+    where: { id, organizationId: ctx.organizationId },
+    select: { id: true },
+  });
+  if (!candidate) throw new Error("Candidate not found");
+  await prisma.$transaction([
+    prisma.emailSendQueue.deleteMany({ where: { candidateId: candidate.id, organizationId: ctx.organizationId } }),
+    prisma.matchWorkItem.deleteMany({ where: { candidateId: candidate.id, organizationId: ctx.organizationId } }),
+    prisma.candidate.delete({ where: { id: candidate.id } }),
+  ]);
+  invalidateOrgCache(ctx.organizationId);
+  return { ok: true as const };
 }
 
 export async function bulkSoftDeleteCandidates(ids: string[]) {

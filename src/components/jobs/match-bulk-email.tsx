@@ -168,12 +168,12 @@ export function MatchBulkEmail({
     setSendProgress({ sent: 0, failed: 0, skipped: 0, total, currentRecipient: recipients[0]?.name ?? null });
 
     try {
-      const res = await fetch("/api/gmail/send-templated-bulk", {
+      const res = await fetch("/api/gmail/send-matching-bulk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          jobId,
-          candidateIds: recipients.map((recipient) => recipient.candidateId),
+          kind: "outreach",
+          jobIds: [jobId],
           templateId: templateId || undefined,
           customLink: resolvedApplyLink,
           subject,
@@ -252,7 +252,7 @@ export function MatchBulkEmail({
         }
       }
 
-      const parts = [`Sent ${sent}`];
+      const parts = [`Queued ${sent}`];
       if (failed) parts.push(`${failed} failed`);
       setResult(parts.join(", "));
       if (failureMessages.length > 0) {
@@ -273,7 +273,7 @@ export function MatchBulkEmail({
   if (!gmailConnected) {
     return (
       <Button asChild size="sm" variant="outline" disabled={recipients.length === 0}>
-        <a href="/admin/integrations">Connect Gmail to email all</a>
+        <a href="/admin/integrations">Add outreach Gmail to email all</a>
       </Button>
     );
   }
@@ -303,7 +303,7 @@ export function MatchBulkEmail({
         </DialogHeader>
         <div className="space-y-4 text-sm">
           <p className="text-xs text-muted-foreground">
-            From: {userEmail} · Each candidate gets a personalized message using merge fields.
+            From: {userEmail} · Invites are queued and sent with a delay across outreach Gmail accounts.
           </p>
           <p className="text-xs">
             <span className="font-medium">{jobLocation}</span>

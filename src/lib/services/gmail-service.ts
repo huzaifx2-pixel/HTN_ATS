@@ -5,7 +5,7 @@ import { uploadOrganizationFile } from "@/lib/storage/document-storage";
 import { computeSuggestedJobsForParsed } from "@/lib/matching/service";
 import { enqueueCandidateMatch } from "@/lib/queue/match-queue";
 import { generateDedupeHash } from "@/lib/utils";
-import { candidateEmploymentFields, candidateIdentityFields, candidateLocationFields, mergeCandidateMetadata, parsedHeadline, resolvedParsedIdentity } from "@/lib/parsers/candidate-fields";
+import { candidateEmploymentFields, candidateIdentityFields, candidateLocationFields, candidateAltContactFields, mergeCandidateMetadata, mergeParsedContactColumns, parsedHeadline, parseOverrideKeys, resolvedParsedIdentity } from "@/lib/parsers/candidate-fields";
 import type { ParsedContactInfo } from "@/lib/parsers/contact-types";
 import type { StructuredParseResult } from "@/lib/parsers/pipeline/types";
 import { persistStructuredParse } from "@/lib/parsers/persist-parsed-resume";
@@ -58,6 +58,50 @@ export async function saveGmailConnection(
 
 export async function getGmailConnection(userId: string) {
   return prisma.gmailConnection.findUnique({ where: { userId } });
+}
+
+export type OrgGmailSender = { userId: string; email: string };
+
+const GMAIL_SENDER_ROLE_PRIORITY: Record<string, number> = {
+  OWNER: 0,
+  ADMIN: 1,
+  MANAGER: 2,
+  RECRUITER: 3,
+  MARKETING: 4,
+};
+
+/** Prefer the acting user, then the host ATS account (OWNER/ADMIN) that has Gmail connected. */
+export async function resolveOrgGmailSender(
+  organizationId: string,
+  preferredUserId?: string | null,
+): Promise<OrgGmailSender | null> {
+  if (preferredUserId) {
+    const own = await prisma.gmailConnection.findUnique({
+      where: { userId: preferredUserId },
+      select: { userId: true, email: true },
+    });
+    if (own) return own;
+  }
+
+  const members = await prisma.member.findMany({
+    where: { organizationId },
+    select: { userId: true, role: true },
+  });
+  if (members.length === 0) return null;
+
+  const connections = await prisma.gmailConnection.findMany({
+    where: { userId: { in: members.map((member) => member.userId) } },
+    select: { userId: true, email: true },
+  });
+  if (connections.length === 0) return null;
+
+  const roleByUser = new Map(members.map((member) => [member.userId, member.role]));
+  connections.sort((a, b) => {
+    const rankA = GMAIL_SENDER_ROLE_PRIORITY[roleByUser.get(a.userId) ?? ""] ?? 50;
+    const rankB = GMAIL_SENDER_ROLE_PRIORITY[roleByUser.get(b.userId) ?? ""] ?? 50;
+    return rankA - rankB;
+  });
+  return connections[0] ?? null;
 }
 
 type GmailSendCredentials = { accessToken: string; email: string; expiresAt: number };
@@ -114,6 +158,20 @@ export async function getGmailSendCredentials(userId: string) {
   return getValidAccessToken(userId);
 }
 
+export async function getGmailSendCredentialsForOrg(
+  organizationId: string,
+  preferredUserId?: string | null,
+) {
+  const sender = await resolveOrgGmailSender(organizationId, preferredUserId);
+  if (!sender) {
+    throw new Error(
+      "Gmail is not connected on the host ATS. Connect Gmail in Integrations on the machine that can send.",
+    );
+  }
+  const creds = await getGmailSendCredentials(sender.userId);
+  return { ...creds, senderUserId: sender.userId, senderEmail: sender.email };
+}
+
 async function sendGmailWithRetry(
   userId: string,
   creds: GmailSendCredentials,
@@ -165,6 +223,17 @@ export async function sendEmailAsUser(
 ) {
   const creds = await getValidAccessToken(userId);
   return sendGmailWithRetry(userId, creds, to, subject, body);
+}
+
+export async function sendEmailAsOrg(
+  organizationId: string,
+  preferredUserId: string | null | undefined,
+  to: string,
+  subject: string,
+  body: string,
+) {
+  const creds = await getGmailSendCredentialsForOrg(organizationId, preferredUserId);
+  return sendGmailWithRetry(creds.senderUserId, creds, to, subject, body);
 }
 
 export async function listPendingInboxDrafts(organizationId: string, limit = 50) {
@@ -408,33 +477,39 @@ async function importParsedResumeToCandidate(
       }
     }
 
+    const overrides = parseOverrideKeys(candidate.metadata);
     const identity = candidateIdentityFields(
       { firstName, lastName },
       candidate,
-      new Set(),
+      overrides,
       options.fileName ?? undefined,
     );
     const nextData = {
       ...identity,
-      phone: (parsed.phone as string | undefined) ?? candidate.phone,
-      phoneCountryCode:
-        normalizePhoneCountryCode(parsed.phoneCountryCode as string | undefined) ??
-        candidate.phoneCountryCode,
+      ...mergeParsedContactColumns(parsed, candidate, overrides),
+      ...candidateAltContactFields(parsed.contact ? { contact: parsed.contact, ...parsed } : parsed),
       linkedIn: (parsed.linkedIn as string | undefined) ?? candidate.linkedIn,
       githubUrl: (parsed.githubUrl as string | undefined) ?? candidate.githubUrl,
       portfolioUrl: (parsed.portfolioUrl as string | undefined) ?? candidate.portfolioUrl,
       website: (parsed.portfolioUrl as string | undefined) ?? candidate.website,
-      currentCompany: (parsed.currentCompany as string | undefined) ?? candidate.currentCompany,
-      currentRole: (parsed.currentRole as string | undefined) ?? candidate.currentRole,
-      currentTitle: (parsed.currentRole as string | undefined) ?? candidate.currentTitle,
+      currentCompany: overrides.has("currentCompany")
+        ? candidate.currentCompany
+        : ((parsed.currentCompany as string | undefined) ?? candidate.currentCompany),
+      currentRole: overrides.has("currentTitle")
+        ? candidate.currentRole
+        : ((parsed.currentRole as string | undefined) ?? candidate.currentRole),
+      currentTitle: overrides.has("currentTitle")
+        ? candidate.currentTitle
+        : ((parsed.currentRole as string | undefined) ?? candidate.currentTitle),
       headline: parsedHeadline(parsed) ?? candidate.headline,
       summary: (parsed.summary as string | undefined) ?? candidate.summary,
-      ...candidateLocationFields(parsed),
       skills: (parsed.skills as string[] | undefined) ?? candidate.skills ?? undefined,
-      experienceYears:
-        (parsed.experienceYears as number | undefined) ?? candidate.experienceYears ?? undefined,
-      yearsExperience:
-        parsed.experienceYears != null ? Math.round(parsed.experienceYears as number) : candidate.yearsExperience,
+      experienceYears: overrides.has("experienceYears")
+        ? candidate.experienceYears
+        : ((parsed.experienceYears as number | undefined) ?? candidate.experienceYears ?? undefined),
+      yearsExperience: overrides.has("experienceYears")
+        ? candidate.yearsExperience
+        : (parsed.experienceYears != null ? Math.round(parsed.experienceYears as number) : candidate.yearsExperience),
       metadata: mergeCandidateMetadata(candidate.metadata, contact, structured),
     };
 
@@ -504,6 +579,7 @@ async function importParsedResumeToCandidate(
         email,
         phone: (parsed.phone as string) ?? options.phone ?? undefined,
         phoneCountryCode: normalizePhoneCountryCode(parsed.phoneCountryCode as string | undefined),
+        ...candidateAltContactFields(parsed as Partial<import("@/lib/parsers/types").ParsedResumeResult>),
         linkedIn: parsed.linkedIn as string | undefined,
         githubUrl: parsed.githubUrl as string | undefined,
         portfolioUrl: parsed.portfolioUrl as string | undefined,

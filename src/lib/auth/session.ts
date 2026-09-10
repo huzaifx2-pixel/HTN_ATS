@@ -4,6 +4,11 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { MemberRole } from "@prisma/client";
 import { CANONICAL_ORG_SLUG, isSingleOrgMode } from "@/lib/org/single-org";
+import type { Permission } from "@/lib/auth/session-types";
+import { isSuperadminRole, permissionsForFeatures } from "@/lib/auth/features";
+import { getRoleFeatures } from "@/lib/services/role-feature-service";
+
+export type { Permission } from "@/lib/auth/session-types";
 
 export const getSession = cache(async function getSession() {
   const session = await auth.api.getSession({
@@ -54,73 +59,47 @@ export async function requireOrgContext() {
   if (!member) {
     throw new Error("No organization found");
   }
+  const features = await getRoleFeatures(member.organizationId, member.role as MemberRole);
   return {
     session,
     userId: session.user.id,
     organizationId: member.organizationId,
     role: member.role as MemberRole,
     organization: member.organization,
+    features,
   };
 }
 
-export type Permission =
-  | "manage_org"
-  | "create_job"
-  | "edit_job"
-  | "move_pipeline"
-  | "send_email"
-  | "manage_marketing"
-  | "view_analytics"
-  | "admin";
-
-const ROLE_PERMISSIONS: Record<MemberRole, Permission[]> = {
-  OWNER: [
-    "manage_org",
-    "create_job",
-    "edit_job",
-    "move_pipeline",
-    "send_email",
-    "manage_marketing",
-    "view_analytics",
-    "admin",
-  ],
-  ADMIN: [
-    "manage_org",
-    "create_job",
-    "edit_job",
-    "move_pipeline",
-    "send_email",
-    "manage_marketing",
-    "view_analytics",
-    "admin",
-  ],
-  MANAGER: [
-    "create_job",
-    "edit_job",
-    "move_pipeline",
-    "send_email",
-    "manage_marketing",
-    "view_analytics",
-  ],
-  RECRUITER: [
-    "create_job",
-    "edit_job",
-    "move_pipeline",
-    "send_email",
-    "view_analytics",
-  ],
-  MARKETING: ["manage_marketing", "send_email", "view_analytics"],
-  FINANCE: ["view_analytics"],
-  VIEWER: ["view_analytics"],
-};
-
-export function hasPermission(role: MemberRole, permission: Permission) {
-  return ROLE_PERMISSIONS[role]?.includes(permission) ?? false;
+export function hasPermission(
+  role: MemberRole,
+  permission: Permission,
+  features: Iterable<string> = [],
+) {
+  if (isSuperadminRole(role)) return true;
+  if (permission === "manage_users") return false;
+  return permissionsForFeatures(features).has(permission);
 }
 
 export async function requirePermission(permission: Permission) {
   const ctx = await requireOrgContext();
-  if (!hasPermission(ctx.role, permission)) {
+  if (!hasPermission(ctx.role, permission, ctx.features)) {
+    throw new Error("Forbidden");
+  }
+  return ctx;
+}
+
+export async function requireSuperadmin() {
+  const ctx = await requireOrgContext();
+  if (!isSuperadminRole(ctx.role)) {
+    throw new Error("Only the organization superadmin can manage users and roles.");
+  }
+  return ctx;
+}
+
+export async function requireFeature(feature: string) {
+  const ctx = await requireOrgContext();
+  if (isSuperadminRole(ctx.role)) return ctx;
+  if (!ctx.features.includes(feature)) {
     throw new Error("Forbidden");
   }
   return ctx;

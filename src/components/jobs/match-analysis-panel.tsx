@@ -49,7 +49,6 @@ export function MatchAnalysisPanel({
   }
 
   const booleanSection = analysis?.requirementBreakdown?.booleanSearch;
-  const locationSection = analysis?.sectionScores?.location ?? analysis?.requirementBreakdown?.location;
   const scoreDiffers =
     storedScore != null && analysis != null && Math.abs(storedScore - analysis.overallScore) >= 1;
 
@@ -66,7 +65,7 @@ export function MatchAnalysisPanel({
               {candidateName} — {analysis.matchCategory} ({analysis.overallScore}/100)
             </CardTitle>
             <p className="text-xs text-muted-foreground">
-              Scored on Boolean search and location only.
+              Scored on Boolean search only.
               {" · "}
               Recommendation: <span className="font-medium text-foreground">{analysis.recommendation}</span>
               {" · "}
@@ -102,7 +101,6 @@ export function MatchAnalysisPanel({
 
             <div className="grid gap-2 sm:grid-cols-2">
               {sectionCard("Boolean search", booleanSection)}
-              {sectionCard("Location", locationSection)}
             </div>
 
             {analysis.strengths.length > 0 && (

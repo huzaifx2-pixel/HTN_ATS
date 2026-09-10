@@ -4,7 +4,7 @@ import type { StructuredParseResult } from "@/lib/parsers/pipeline/types";
 import { parseProfileMetadata } from "@/lib/parsers/persist-parsed-resume";
 import { inferNameFromResumeFileName } from "@/lib/parsers/contact-normalize";
 import { normalizePhoneCountryCode, splitPhoneForStorage } from "@/lib/format-phone";
-import { sanitizeParsedContactFields } from "@/lib/sanitize-contact";
+import { sanitizeCandidateEmail, sanitizeParsedContactFields } from "@/lib/sanitize-contact";
 
 function formatLocationWithStateZip(parsed: Partial<ParsedResumeResult>): string | undefined {
   const sanitized = sanitizeParsedContactFields({
@@ -36,6 +36,30 @@ export function candidatePhoneFields(parsed: Partial<ParsedResumeResult>) {
   return {
     phone: parsed.phone,
     phoneCountryCode: normalizePhoneCountryCode(parsed.phoneCountryCode),
+  };
+}
+
+export function candidateAltContactFields(parsed: Partial<ParsedResumeResult>) {
+  const primaryEmail = sanitizeCandidateEmail(parsed.email)?.toLowerCase();
+  const altEmail = (parsed.contact?.emails ?? [])
+    .map((entry) => sanitizeCandidateEmail(entry.value))
+    .find((value) => value && value.toLowerCase() !== primaryEmail);
+
+  const primaryDigits = (parsed.phone ?? "").replace(/\D/g, "");
+  let altPhone: string | undefined;
+  let altPhoneCountryCode: string | undefined;
+  for (const entry of parsed.contact?.phones ?? []) {
+    const stored = splitPhoneForStorage(entry);
+    const digits = (stored.phone ?? "").replace(/\D/g, "");
+    if (!digits || digits === primaryDigits) continue;
+    altPhone = stored.phone;
+    altPhoneCountryCode = stored.phoneCountryCode ?? normalizePhoneCountryCode(String(entry.country_code ?? ""));
+    break;
+  }
+
+  return {
+    ...(altEmail ? { altEmail } : {}),
+    ...(altPhone ? { altPhone, altPhoneCountryCode: altPhoneCountryCode || undefined } : {}),
   };
 }
 
@@ -87,6 +111,53 @@ export function candidateEmploymentFields(parsed: Partial<ParsedResumeResult>) {
     experienceYears: years,
     yearsExperience: years != null ? Math.round(years) : undefined,
   };
+}
+
+export function mergeParsedContactColumns(
+  parsed: Partial<ParsedResumeResult>,
+  existing: {
+    email?: string | null;
+    phone?: string | null;
+    phoneCountryCode?: string | null;
+    location?: string | null;
+    city?: string | null;
+    country?: string | null;
+    workAuthorization?: string | null;
+    availability?: string | null;
+  },
+  overrides: Set<string>,
+) {
+  const location = candidateLocationFields(parsed);
+  const phone = candidatePhoneFields(parsed);
+  const locationLocked = overrides.has("location") || overrides.has("city") || overrides.has("country");
+  return {
+    email: overrides.has("email")
+      ? existing.email
+      : (sanitizeCandidateEmail(parsed.email) ?? existing.email),
+    phone: overrides.has("phone") ? existing.phone : (phone.phone ?? existing.phone),
+    phoneCountryCode: overrides.has("phone")
+      ? existing.phoneCountryCode
+      : (phone.phoneCountryCode ?? existing.phoneCountryCode),
+    location: locationLocked ? existing.location : (location.location ?? existing.location),
+    city: locationLocked ? existing.city : (location.city ?? existing.city),
+    country: locationLocked ? existing.country : (location.country ?? existing.country),
+    workAuthorization: location.workAuthorization ?? existing.workAuthorization,
+    availability: location.availability ?? existing.availability,
+  };
+}
+
+export function setParseOverrides(metadata: unknown, keys: string[]): Record<string, unknown> {
+  const base =
+    metadata && typeof metadata === "object" && !Array.isArray(metadata)
+      ? { ...(metadata as Record<string, unknown>) }
+      : {};
+  const existing =
+    base.parseOverrides && typeof base.parseOverrides === "object" && !Array.isArray(base.parseOverrides)
+      ? { ...(base.parseOverrides as Record<string, unknown>) }
+      : {};
+  for (const key of keys) existing[key] = true;
+  base.parseOverrides = existing;
+  return base;
 }
 
 export function parseOverrideKeys(metadata: unknown): Set<string> {

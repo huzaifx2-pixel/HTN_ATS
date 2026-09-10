@@ -72,14 +72,12 @@ async function main() {
   const {
     candidateEmploymentFields,
     candidateIdentityFields,
-    candidateLocationFields,
-    candidatePhoneFields,
     mergeCandidateMetadata,
+    mergeParsedContactColumns,
     parsedHeadline,
     parseOverrideKeys,
     isPlaceholderPersonName,
   } = await import("../src/lib/parsers/candidate-fields");
-  const { sanitizeCandidateEmail } = await import("../src/lib/sanitize-contact");
 
   const prisma = new PrismaClient();
   const reparseAll = process.argv.includes("--all");
@@ -168,21 +166,31 @@ async function main() {
                 where: { id: candidate.id },
                 data: {
                   ...identity,
-                  email: sanitizeCandidateEmail(parsed.email) ?? candidate.email,
-                  ...candidatePhoneFields(parsed),
+                  ...mergeParsedContactColumns(parsed, candidate, overrides),
                   linkedIn: parsed.linkedIn ?? candidate.linkedIn,
                   githubUrl: parsed.githubUrl ?? candidate.githubUrl,
                   portfolioUrl: parsed.portfolioUrl ?? candidate.portfolioUrl,
                   website: parsed.portfolioUrl ?? candidate.website,
                   ...candidateEmploymentFields(parsed),
-                  currentCompany: parsed.currentCompany ?? candidate.currentCompany,
-                  currentRole: parsed.currentRole ?? candidate.currentRole,
-                  currentTitle: parsed.currentRole ?? candidate.currentTitle,
-                  experienceYears: parsed.experienceYears ?? candidate.experienceYears,
-                  yearsExperience: parsed.experienceYears != null ? Math.round(parsed.experienceYears) : candidate.yearsExperience,
+                  currentCompany: overrides.has("currentCompany")
+                    ? candidate.currentCompany
+                    : (parsed.currentCompany ?? candidate.currentCompany),
+                  currentRole: overrides.has("currentTitle")
+                    ? candidate.currentRole
+                    : (parsed.currentRole ?? candidate.currentRole),
+                  currentTitle: overrides.has("currentTitle")
+                    ? candidate.currentTitle
+                    : (parsed.currentRole ?? candidate.currentTitle),
+                  experienceYears: overrides.has("experienceYears")
+                    ? candidate.experienceYears
+                    : (parsed.experienceYears ?? candidate.experienceYears),
+                  yearsExperience: overrides.has("experienceYears")
+                    ? candidate.yearsExperience
+                    : (parsed.experienceYears != null
+                      ? Math.round(parsed.experienceYears)
+                      : candidate.yearsExperience),
                   headline: parsedHeadline(parsed) ?? candidate.headline,
                   summary: parsed.summary ?? candidate.summary,
-                  ...candidateLocationFields(parsed),
                   skills: parsed.skills as object,
                   metadata: mergeCandidateMetadata(candidate.metadata, parsed.contact, structured),
                 },

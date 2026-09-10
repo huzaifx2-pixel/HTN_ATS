@@ -22,9 +22,10 @@ export default async function NewCandidatePage() {
               <div><Label htmlFor="firstName">First Name</Label><Input id="firstName" name="firstName" required className="mt-1" /></div>
               <div><Label htmlFor="lastName">Last Name</Label><Input id="lastName" name="lastName" required className="mt-1" /></div>
             </div>
-            <div><Label htmlFor="email">Email</Label><Input id="email" name="email" type="email" className="mt-1" /></div>
+            <div><Label htmlFor="email">Main email</Label><Input id="email" name="email" type="email" className="mt-1" /></div>
+            <div><Label htmlFor="altEmail">Alternative email</Label><Input id="altEmail" name="altEmail" type="email" className="mt-1" /></div>
             <div>
-              <Label className="mb-1 block">Phone</Label>
+              <Label className="mb-1 block">Main phone</Label>
               <div className="grid grid-cols-[140px_1fr] gap-3">
                 <select
                   id="phoneCountryCode"
@@ -40,6 +41,25 @@ export default async function NewCandidatePage() {
                   ))}
                 </select>
                 <Input id="phone" name="phone" type="tel" placeholder="Phone number" />
+              </div>
+            </div>
+            <div>
+              <Label className="mb-1 block">Alternative phone</Label>
+              <div className="grid grid-cols-[140px_1fr] gap-3">
+                <select
+                  id="altPhoneCountryCode"
+                  name="altPhoneCountryCode"
+                  defaultValue=""
+                  className="flex h-10 w-full rounded-lg border border-border bg-card px-3 py-2 text-sm"
+                >
+                  <option value="">Code</option>
+                  {PHONE_COUNTRY_CODES.map(({ code, label }) => (
+                    <option key={code} value={code}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+                <Input id="altPhone" name="altPhone" type="tel" placeholder="Alternative phone" />
               </div>
             </div>
             <div><Label htmlFor="currentRole">Current Role</Label><Input id="currentRole" name="currentRole" className="mt-1" /></div>

@@ -30,7 +30,9 @@ export function StatusBadge({ status }: { status: string }) {
     status === "OPEN" ? "success" :
     status === "ON_HOLD" ? "warning" :
     status === "CLOSED" || status === "FILLED" ? "secondary" : "default";
-  const label = status.replace(/_/g, " ");
+  const label =
+    status === "OPEN" ? "Published" :
+    status.replace(/_/g, " ");
   return <Badge variant={variant}>{label}</Badge>;
 }
 

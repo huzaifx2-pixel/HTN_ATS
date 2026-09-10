@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { getActiveOrganization, getSession, hasPermission } from "@/lib/auth/session";
+import { getRoleFeatures } from "@/lib/services/role-feature-service";
 import { getOrgStorageSettings } from "@/lib/services/org-settings-service";
 import { PageHeader } from "@/components/shared/dashboard-widgets";
 import { StorageLimitForm } from "@/components/settings/storage-limit-form";
@@ -13,7 +14,8 @@ export default async function SettingsPage() {
   if (!member) redirect("/signup");
 
   const storage = await getOrgStorageSettings(member.organizationId);
-  const canManage = hasPermission(member.role, "admin");
+  const features = await getRoleFeatures(member.organizationId, member.role);
+  const canManage = hasPermission(member.role, "admin", features);
 
   return (
     <div className="space-y-4">

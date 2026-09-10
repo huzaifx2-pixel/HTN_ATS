@@ -3,15 +3,14 @@ import { MemberRole } from "@prisma/client";
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
 import { setCredentialPassword, validateNewPassword } from "@/lib/auth/password";
-import { requireOrgContext } from "@/lib/auth/session";
+import { requireOrgContext, requireSuperadmin } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import {
   isAllowedSignupEmail,
   signupDomainErrorMessage,
 } from "@/lib/org/signup-domain";
-import { isSuperAdminEmail } from "@/lib/org/super-admin";
 
-const ASSIGNABLE_ROLES: MemberRole[] = ["ADMIN", "RECRUITER", "VIEWER"];
+const ASSIGNABLE_ROLES: MemberRole[] = ["ADMIN", "RECRUITER", "EXTERNAL_RECRUITER"];
 
 function parseRole(value: string | null): MemberRole | null {
   const role = String(value ?? "").trim().toUpperCase();
@@ -21,11 +20,7 @@ function parseRole(value: string | null): MemberRole | null {
 }
 
 async function requireUserManagement() {
-  const ctx = await requireOrgContext();
-  if (!isSuperAdminEmail(ctx.session.user.email)) {
-    throw new Error("Only the organization super admin can manage users.");
-  }
-  return ctx;
+  return requireSuperadmin();
 }
 
 async function countOwners(organizationId: string) {
@@ -54,7 +49,7 @@ export async function addOrganizationMember(input: {
   }
 
   if (role === "OWNER") {
-    throw new Error("Cannot assign OWNER through this form.");
+    throw new Error("Cannot assign Superadmin through this form.");
   }
 
   let user = await prisma.user.findUnique({ where: { email } });
@@ -116,7 +111,7 @@ export async function removeOrganizationMember(memberId: string) {
   if (target.role === "OWNER") {
     const owners = await countOwners(ctx.organizationId);
     if (owners <= 1) {
-      throw new Error("Cannot remove the last owner.");
+      throw new Error("Cannot remove the last Superadmin.");
     }
   }
 
@@ -190,12 +185,12 @@ export async function updateOrganizationMemberRole(memberId: string, roleInput: 
   if (target.role === "OWNER" && role !== "OWNER") {
     const owners = await countOwners(ctx.organizationId);
     if (owners <= 1) {
-      throw new Error("Cannot change role of the last owner.");
+      throw new Error("Cannot change role of the last Superadmin.");
     }
   }
 
   if (role === "OWNER" && target.role !== "OWNER") {
-    throw new Error("Cannot promote members to OWNER through this form.");
+    throw new Error("Cannot promote members to Superadmin through this form.");
   }
 
   await prisma.member.update({

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/auth/session";
-import { sendEmailAsUser } from "@/lib/services/gmail-service";
+import { sendEmailAsOrg } from "@/lib/services/gmail-service";
 import { markCandidateEngaged } from "@/lib/services/candidate-service";
 import { assertEmailCanBeContacted } from "@/lib/services/contact-compliance-service";
 import { prisma } from "@/lib/db";
@@ -18,7 +18,7 @@ export async function POST(request: NextRequest) {
 
     await assertEmailCanBeContacted(to, ctx.organizationId);
 
-    const result = await sendEmailAsUser(ctx.userId, to, subject, formatEmailBodyHtml(body));
+    const result = await sendEmailAsOrg(ctx.organizationId, ctx.userId, to, subject, formatEmailBodyHtml(body));
 
     if (candidateId) {
       const candidate = await prisma.candidate.findFirst({

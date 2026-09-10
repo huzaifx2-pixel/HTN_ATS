@@ -12,12 +12,11 @@ import {
   resolvePhoneCountryCode,
 } from "@/lib/format-phone";
 import {
-  getCandidateEmails,
   getCandidateLocation,
-  getCandidatePhones,
+  getCandidateContactSlots,
 } from "@/lib/candidate-contact-display";
-import { sanitizeCandidateEmail } from "@/lib/sanitize-contact";
 import { isCandidateEngaged } from "@/lib/services/candidate-service";
+import { isMatchAnalysisDismissed } from "@/lib/matching/match-dismissed";
 import { CandidateEmailCompose } from "@/components/candidates/candidate-email-compose";
 import { DeleteCandidateButton } from "@/components/candidates/delete-candidate-button";
 import { engageCandidateAction } from "@/app/actions";
@@ -28,6 +27,7 @@ import { DuplicateCandidatesPanel } from "@/components/candidates/duplicate-cand
 import { ParseReviewPanel } from "@/components/candidates/parse-review-panel";
 import { CandidateRecordLayout, normalizeCandidateTab } from "@/components/candidates/candidate-record-layout";
 import { CandidateRecordSidebar, type RecordNote } from "@/components/candidates/candidate-record-sidebar";
+import { CandidateRecordRail } from "@/components/candidates/candidate-record-rail";
 import { CandidateResumePane } from "@/components/candidates/candidate-resume-pane";
 import {
   getCertificationRows,
@@ -35,7 +35,7 @@ import {
   getExperienceRows,
   getSkillNames,
 } from "@/lib/candidates/profile-view-data";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Micro1ReferralPanel } from "@/components/candidates/micro1-referral-panel";
 
 function shortDate(value: Date) {
   return new Intl.DateTimeFormat("en-US", {
@@ -57,7 +57,7 @@ export default async function CandidateDetailPage({
   const tab = normalizeCandidateTab(rawTab);
   after(trackRequestDuration("candidate-profile"));
 
-  const { candidate, gmail, timeline, duplicates } = await withPagePerf("candidate-profile", async () => {
+  const { candidate, gmail, timeline, duplicates, referral } = await withPagePerf("candidate-profile", async () => {
     const session = await getSession();
     if (!session?.user) redirect("/login");
     const member = await getActiveOrganization(session.user.id);
@@ -65,7 +65,7 @@ export default async function CandidateDetailPage({
 
     const loaded = await getCandidateProfile(id, member.organizationId, { userId: session.user.id });
     if (!loaded) {
-      return { candidate: null, gmail: null, timeline: [], duplicates: [] };
+      return { candidate: null, gmail: null, timeline: [], duplicates: [], referral: null };
     }
     return loaded;
   });
@@ -82,14 +82,17 @@ export default async function CandidateDetailPage({
   const highlightSkills = parsedSkills.length > 0 ? parsedSkills : skills;
 
   const appliedJobIds = new Set(candidate.applications.map((a) => a.jobId));
-  const matchingJobs = candidate.matches.filter((m) => !appliedJobIds.has(m.jobId));
+  const matchingJobs = candidate.matches.filter(
+    (m) => !appliedJobIds.has(m.jobId) && !isMatchAnalysisDismissed(m.analysis),
+  );
   const engaged = isCandidateEngaged(candidate);
   const phoneCountryCode = resolvePhoneCountryCode(candidate);
-  const contactEmails = getCandidateEmails(candidate);
-  const contactPhones = getCandidatePhones(candidate);
   const contactLocation = getCandidateLocation(candidate);
-  const primaryEmail = sanitizeCandidateEmail(candidate.email) ?? contactEmails[0]?.value;
-  const primaryPhone = contactPhones[0]?.value;
+  const contact = getCandidateContactSlots(candidate);
+  const primaryEmail = contact.mainEmail;
+  const primaryPhone = contact.mainPhoneDisplay;
+  const phoneHref = contact.mainPhoneHref;
+  const resumeDocuments = candidate.documents.filter((item) => item.type === "RESUME");
   const fullName = `${candidate.firstName} ${candidate.lastName}`;
   const title = [candidate.currentRole, candidate.currentCompany].filter(Boolean).join(" at ");
 
@@ -105,22 +108,56 @@ export default async function CandidateDetailPage({
   const sidebar = (
     <CandidateRecordSidebar
       candidateId={id}
-      name={fullName}
+      firstName={candidate.firstName}
+      lastName={candidate.lastName}
+      title={title || candidate.headline}
+      status={candidate.status}
       email={primaryEmail}
+      altEmail={contact.altEmail}
       phone={primaryPhone}
+      phoneRaw={contact.mainPhoneRaw ?? candidate.phone}
+      phoneCountryCode={contact.mainPhoneCountryCode ?? phoneCountryCode}
+      phoneHref={phoneHref}
+      altPhone={contact.altPhoneDisplay}
+      altPhoneRaw={contact.altPhoneRaw}
+      altPhoneCountryCode={contact.altPhoneCountryCode}
+      altPhoneHref={contact.altPhoneHref}
       location={contactLocation}
       linkedIn={candidate.linkedIn}
-      notes={notes}
+      githubUrl={candidate.githubUrl}
+      portfolioUrl={candidate.portfolioUrl}
+      website={candidate.website}
+      currentRole={candidate.currentRole}
+      currentCompany={candidate.currentCompany}
       skills={highlightSkills}
+      experienceYears={candidate.experienceYears}
+      notes={notes}
+      applications={candidate.applications.map((application) => ({
+        id: application.id,
+        jobId: application.jobId,
+        stage: application.stage,
+        date: shortDate(application.createdAt),
+        job: application.job,
+      }))}
       experience={getExperienceRows(candidate)}
       education={getEducationRows(candidate)}
       certifications={getCertificationRows(candidate)}
     />
   );
 
+  const rail = (
+    <CandidateRecordRail
+      candidateId={id}
+      documents={resumeDocuments}
+      timeline={timeline}
+    />
+  );
+
   let main: ReactNode;
 
-  if (tab === "edit") {
+  if (tab === "referral") {
+    main = <Micro1ReferralPanel referral={referral ?? null} />;
+  } else if (tab === "edit") {
     main = (
       <div className="p-4">
         <Card className="max-w-2xl">
@@ -147,16 +184,20 @@ export default async function CandidateDetailPage({
                 </div>
               </div>
               <div>
-                <Label htmlFor="email">Email</Label>
+                <Label htmlFor="email">Main email</Label>
                 <Input id="email" name="email" type="email" defaultValue={primaryEmail ?? ""} className="mt-1" />
               </div>
               <div>
-                <Label className="mb-1 block">Phone</Label>
+                <Label htmlFor="altEmail">Alternative email</Label>
+                <Input id="altEmail" name="altEmail" type="email" defaultValue={contact.altEmail ?? ""} className="mt-1" />
+              </div>
+              <div>
+                <Label className="mb-1 block">Main phone</Label>
                 <div className="grid grid-cols-[140px_1fr] gap-3">
                   <select
                     id="phoneCountryCode"
                     name="phoneCountryCode"
-                    defaultValue={phoneCountryCode ?? ""}
+                    defaultValue={contact.mainPhoneCountryCode ?? phoneCountryCode ?? ""}
                     className="flex h-10 w-full rounded-lg border border-border bg-card px-3 py-2 text-sm"
                   >
                     <option value="">Code</option>
@@ -165,12 +206,37 @@ export default async function CandidateDetailPage({
                         {label}
                       </option>
                     ))}
-                    {phoneCountryCode &&
-                      !PHONE_COUNTRY_CODES.some(({ code }) => code === phoneCountryCode) && (
-                        <option value={phoneCountryCode}>{phoneCountryCode}</option>
+                    {(contact.mainPhoneCountryCode ?? phoneCountryCode) &&
+                      !PHONE_COUNTRY_CODES.some(({ code }) => code === (contact.mainPhoneCountryCode ?? phoneCountryCode)) && (
+                        <option value={contact.mainPhoneCountryCode ?? phoneCountryCode}>
+                          {contact.mainPhoneCountryCode ?? phoneCountryCode}
+                        </option>
                       )}
                   </select>
-                  <Input id="phone" name="phone" type="tel" placeholder="Phone number" defaultValue={candidate.phone ?? ""} />
+                  <Input id="phone" name="phone" type="tel" placeholder="Phone number" defaultValue={contact.mainPhoneRaw ?? candidate.phone ?? ""} />
+                </div>
+              </div>
+              <div>
+                <Label className="mb-1 block">Alternative phone</Label>
+                <div className="grid grid-cols-[140px_1fr] gap-3">
+                  <select
+                    id="altPhoneCountryCode"
+                    name="altPhoneCountryCode"
+                    defaultValue={contact.altPhoneCountryCode ?? ""}
+                    className="flex h-10 w-full rounded-lg border border-border bg-card px-3 py-2 text-sm"
+                  >
+                    <option value="">Code</option>
+                    {PHONE_COUNTRY_CODES.map(({ code, label }) => (
+                      <option key={code} value={code}>
+                        {label}
+                      </option>
+                    ))}
+                    {contact.altPhoneCountryCode &&
+                      !PHONE_COUNTRY_CODES.some(({ code }) => code === contact.altPhoneCountryCode) && (
+                        <option value={contact.altPhoneCountryCode}>{contact.altPhoneCountryCode}</option>
+                      )}
+                  </select>
+                  <Input id="altPhone" name="altPhone" type="tel" placeholder="Alternative phone" defaultValue={contact.altPhoneRaw ?? ""} />
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
@@ -189,6 +255,10 @@ export default async function CandidateDetailPage({
                 </div>
               </div>
               <div>
+                <Label htmlFor="location">Location</Label>
+                <Input id="location" name="location" defaultValue={contactLocation ?? ""} className="mt-1" />
+              </div>
+              <div>
                 <Label htmlFor="linkedIn">LinkedIn</Label>
                 <Input id="linkedIn" name="linkedIn" defaultValue={candidate.linkedIn ?? ""} className="mt-1" />
               </div>
@@ -199,6 +269,10 @@ export default async function CandidateDetailPage({
               <div>
                 <Label htmlFor="portfolioUrl">Portfolio</Label>
                 <Input id="portfolioUrl" name="portfolioUrl" defaultValue={candidate.portfolioUrl ?? ""} className="mt-1" />
+              </div>
+              <div>
+                <Label htmlFor="website">Website</Label>
+                <Input id="website" name="website" defaultValue={candidate.website ?? ""} className="mt-1" />
               </div>
               <div>
                 <Label htmlFor="skills">Skills (comma-separated)</Label>
@@ -345,14 +419,23 @@ export default async function CandidateDetailPage({
           downloadUrl={downloadUrl}
           fileName={doc?.fileName}
           mimeType={doc?.mimeType}
-          documents={candidate.documents.filter((item) => item.type === "RESUME")}
         />
       </div>
     );
   }
 
   return (
-    <CandidateRecordLayout candidateId={id} activeTab={tab} sidebar={sidebar}>
+    <CandidateRecordLayout
+      candidateId={id}
+      activeTab={tab}
+      email={primaryEmail}
+      phoneHref={phoneHref}
+      linkedIn={candidate.linkedIn}
+      downloadUrl={downloadUrl}
+      fileName={doc?.fileName}
+      sidebar={sidebar}
+      rail={rail}
+    >
       {main}
     </CandidateRecordLayout>
   );

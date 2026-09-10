@@ -17,7 +17,7 @@ export const DEFAULT_WEIGHTS: MatchWeights = {
   skills: 0,
   experience: 0,
   title: 0,
-  location: 50,
+  location: 0,
   description: 0,
 };
 

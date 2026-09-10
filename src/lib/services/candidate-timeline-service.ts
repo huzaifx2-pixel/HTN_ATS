@@ -71,8 +71,9 @@ export async function getCandidateTimeline(
       at: activity.createdAt,
       category,
       title: formatActivityAction(activity.action, activity.metadata),
-      detail:
-        activity.metadata && typeof activity.metadata === "object"
+      detail: activity.action.startsWith("micro1.")
+        ? "Source: micro1 CSV import"
+        : activity.metadata && typeof activity.metadata === "object"
           ? JSON.stringify(activity.metadata).slice(0, 120)
           : undefined,
     });

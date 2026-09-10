@@ -38,7 +38,7 @@ const STATUS_STYLES: Record<string, string> = {
 };
 
 export function hasBooleanLocationBreakdown(data?: MatchWhyData["requirementBreakdown"] | null) {
-  return (data?.location?.maxScore ?? 0) > 0 || (data?.booleanSearch?.maxScore ?? 0) > 0;
+  return (data?.booleanSearch?.maxScore ?? 0) > 0;
 }
 
 function sectionBits(section?: CompactSection) {
@@ -58,14 +58,10 @@ export function MatchStatusBadge({ status }: { status?: string | null }) {
 
 export function MatchWhySummary({ data }: { data: MatchWhyData }) {
   const boolean = sectionBits(data.requirementBreakdown?.booleanSearch);
-  const location = sectionBits(data.requirementBreakdown?.location);
-  const signals = [
-    data.retrievalSignals?.boolean ? "Boolean" : null,
-    data.retrievalSignals?.location ? "Location" : null,
-  ].filter(Boolean);
+  const signals = [data.retrievalSignals?.boolean ? "Boolean" : null].filter(Boolean);
 
-  const why = [...boolean.matched, ...location.matched].slice(0, 8);
-  const gaps = [...boolean.missing, ...location.missing].slice(0, 6);
+  const why = boolean.matched.slice(0, 8);
+  const gaps = boolean.missing.slice(0, 6);
 
   if (!data.matchStatus && why.length === 0 && gaps.length === 0) return null;
 

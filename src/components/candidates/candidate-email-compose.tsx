@@ -39,7 +39,7 @@ export function CandidateEmailCompose({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Failed to send");
-      setMessage(`Email sent from ${userEmail ?? "your Gmail"}`);
+      setMessage(`Email sent from ${userEmail ?? "the host ATS Gmail"}`);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -62,10 +62,10 @@ export function CandidateEmailCompose({
       <CardHeader>
         <CardTitle className="text-sm">Email Candidate</CardTitle>
         {gmailConnected ? (
-          <p className="text-xs text-muted-foreground">Sends from your Gmail: {userEmail}</p>
+          <p className="text-xs text-muted-foreground">Sends from Gmail: {userEmail}</p>
         ) : (
           <p className="text-xs text-amber-600">
-            Connect Gmail in Integrations to send from your own email address.
+            Connect Gmail on the host ATS in Integrations so this team can send emails.
           </p>
         )}
       </CardHeader>
@@ -94,12 +94,12 @@ export function CandidateEmailCompose({
             {error && <p className="text-sm text-destructive">{error}</p>}
             {message && <p className="text-sm text-green-700">{message}</p>}
             <Button type="submit" disabled={loading} size="sm">
-              {loading ? "Sending..." : "Send from my Gmail"}
+              {loading ? "Sending..." : "Send email"}
             </Button>
           </form>
         ) : (
           <Button asChild size="sm" variant="outline">
-            <a href="/api/gmail/connect">Connect Gmail to send emails</a>
+            <a href="/admin/integrations">Connect Gmail on the host ATS</a>
           </Button>
         )}
       </CardContent>

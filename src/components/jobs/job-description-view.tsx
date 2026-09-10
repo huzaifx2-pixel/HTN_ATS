@@ -33,7 +33,7 @@ export function JobDescriptionView({
   return (
     <div className="space-y-6 pt-2">
       {responsibilities?.trim() && (
-        <JobDescriptionSection title="Responsibilities" items={splitLines(responsibilities)} />
+        <JobDescriptionSection title="Key Responsibilities" items={splitLines(responsibilities)} />
       )}
 
       {requirementsText?.trim() && (

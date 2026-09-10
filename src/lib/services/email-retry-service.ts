@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import { sendTemplatedEmailInternal } from "@/lib/services/email-service";
 import { logSystemEvent } from "@/lib/system-logger";
 import { notifyEmailFailed } from "@/lib/services/telegram-notification-service";
+import { hasActiveOutreachMailbox } from "@/lib/services/outreach-mailbox-service";
 
 const RETRY_DELAYS_MS = [5 * 60_000, 15 * 60_000, 60 * 60_000];
 
@@ -14,7 +15,7 @@ export async function enqueueEmailRetry(input: {
   jobId: string;
   candidateId: string;
   templateId: string;
-  senderUserId: string;
+  senderUserId?: string | null;
   autoSent?: boolean;
   lastError?: string;
 }) {
@@ -60,6 +61,7 @@ export async function processEmailRetryQueue(limit = 50) {
     where: {
       status: "PENDING",
       nextRetryAt: { lte: now },
+      OR: [{ lastError: { not: null } }, { retryCount: { gt: 0 } }],
     },
     orderBy: { nextRetryAt: "asc" },
     take: limit,
@@ -70,6 +72,10 @@ export async function processEmailRetryQueue(limit = 50) {
   let skipped = 0;
 
   for (const item of pending) {
+    if (await hasActiveOutreachMailbox(item.organizationId)) {
+      skipped++;
+      continue;
+    }
     await prisma.emailSendQueue.update({
       where: { id: item.id },
       data: { status: "PROCESSING" },
@@ -80,8 +86,12 @@ export async function processEmailRetryQueue(limit = 50) {
         organizationId: item.organizationId,
         jobId: item.jobId,
         candidateId: item.candidateId,
-        templateId: item.templateId,
-        userId: item.senderUserId,
+        templateId: item.templateId ?? undefined,
+        userId: item.senderUserId ?? undefined,
+        outreachMailboxId: item.outreachMailboxId,
+        subject: item.subject,
+        body: item.body,
+        customLink: item.customLink,
         autoSent: item.autoSent,
       });
 

@@ -8,6 +8,8 @@ import { withTtlCache } from "@/lib/cache/ttl-cache";
 
 export const FOLLOW_UP_AFTER_DAYS = 2;
 
+const MATCH_NOT_DISMISSED = Prisma.sql`(jm.analysis IS NULL OR (jm.analysis::jsonb #>> '{dismissed}') IS DISTINCT FROM 'true')`;
+
 const BOOLEAN_NOT_FAILED = Prisma.sql`(jm.analysis IS NULL OR (jm.analysis::jsonb #>> '{booleanSearch,passes}') IS DISTINCT FROM 'false')`;
 
 export type JobMatchEmailStats = {
@@ -83,6 +85,7 @@ export async function getJobMatchEmailStatsByJobIds(
     ) e ON e."jobId" = jm."jobId" AND e."candidateId" = jm."candidateId"
     WHERE j."organizationId" = ${organizationId}
       AND jm."jobId" IN (${Prisma.join(jobIds)})
+      AND ${MATCH_NOT_DISMISSED}
       AND c."deletedAt" IS NULL
     GROUP BY jm."jobId"
   `;
@@ -129,6 +132,7 @@ export async function countJobsWithPendingMatchEmails(organizationId: string) {
         AND j."booleanSearch" IS NOT NULL
         AND btrim(j."booleanSearch") <> ''
         AND c."deletedAt" IS NULL
+        AND ${MATCH_NOT_DISMISSED}
         AND ${BOOLEAN_NOT_FAILED}
       GROUP BY jm."jobId"
       HAVING
@@ -184,6 +188,7 @@ export async function getJobsWithPendingMatchEmails(organizationId: string, limi
       AND j."booleanSearch" IS NOT NULL
       AND btrim(j."booleanSearch") <> ''
       AND c."deletedAt" IS NULL
+      AND ${MATCH_NOT_DISMISSED}
       AND ${BOOLEAN_NOT_FAILED}
     GROUP BY jm."jobId"
     HAVING
@@ -417,6 +422,7 @@ export async function getMatchingHubSummary(organizationId: string): Promise<Mat
               AND j."booleanSearch" IS NOT NULL
               AND btrim(j."booleanSearch") <> ''
               AND c."deletedAt" IS NULL
+              AND ${MATCH_NOT_DISMISSED}
               AND ${BOOLEAN_NOT_FAILED}
             GROUP BY jm."jobId"
           ) stats
@@ -512,6 +518,7 @@ export async function getJobsWithMatchingCandidates(
       AND j."booleanSearch" IS NOT NULL
       AND btrim(j."booleanSearch") <> ''
       AND c."deletedAt" IS NULL
+      AND ${MATCH_NOT_DISMISSED}
       AND ${BOOLEAN_NOT_FAILED}
       ${searchSql.where}
     GROUP BY jm."jobId"
@@ -657,6 +664,7 @@ export async function getPendingMatchRecipientsByJob(
       AND btrim(c.email) <> ''
       AND a.id IS NULL
       AND e."candidateId" IS NULL
+      AND ${MATCH_NOT_DISMISSED}
     ORDER BY jm.score DESC, jm.id DESC
     LIMIT ${limit}
   `;

@@ -311,7 +311,7 @@ export function MatchingHubEmail({
         }
       }
 
-      const parts = [`Sent ${sent}`];
+      const parts = [`Queued ${sent}`];
       if (failed) parts.push(`${failed} failed`);
       if (skipped) parts.push(`${skipped} skipped`);
       setResult(parts.join(", "));
@@ -333,7 +333,7 @@ export function MatchingHubEmail({
   if (!gmailConnected) {
     return (
       <Button asChild size={triggerSize} variant="outline" disabled={remainingCount === 0 || selectedJobCount === 0}>
-        <a href="/admin/integrations">Connect Gmail to {mode === "followup" ? "follow up" : "email matches"}</a>
+        <a href="/admin/integrations">Add outreach Gmail to {mode === "followup" ? "follow up" : "email matches"}</a>
       </Button>
     );
   }
@@ -383,11 +383,8 @@ export function MatchingHubEmail({
         </DialogHeader>
         <div className="space-y-4 text-sm">
           <p className="text-xs text-muted-foreground">
-            From: {userEmail} · Each candidate gets a personalized message using merge fields
-            {isSingleJob ? "." : ". Each job uses its own apply link, title, and salary."}
-            {!isSingleJob && remainingCount > 2000
-              ? " Sends up to 2,000 remaining matches per click across the selected jobs."
-              : ""}
+            From: {userEmail} · Invites are queued and sent with a delay, rotating across outreach Gmail accounts as each hits its daily limit.
+            {isSingleJob ? "" : " Each job uses its own apply link, title, and salary."}
           </p>
           {isSingleJob && (
             <p className="text-xs">

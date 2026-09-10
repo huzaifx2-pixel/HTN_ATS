@@ -25,7 +25,7 @@ export function jobMatchFingerprint(job: {
 }): string {
   const inputHash = computeJobMatchInputHash(matchInputFieldsFromRequirements(job));
   const booleanSearch = job.booleanSearch?.trim() ?? "";
-  return createHash("sha256").update(`${inputHash}:${booleanSearch}:v3-boolean-location`).digest("hex");
+  return createHash("sha256").update(`${inputHash}:${booleanSearch}:v4-boolean-only`).digest("hex");
 }
 
 export function readLastMatchedFingerprint(metadata: unknown): string | undefined {

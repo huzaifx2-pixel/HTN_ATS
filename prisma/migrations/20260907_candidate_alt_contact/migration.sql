@@ -1,0 +1,3 @@
+ALTER TABLE "Candidate" ADD COLUMN IF NOT EXISTS "altEmail" TEXT;
+ALTER TABLE "Candidate" ADD COLUMN IF NOT EXISTS "altPhone" TEXT;
+ALTER TABLE "Candidate" ADD COLUMN IF NOT EXISTS "altPhoneCountryCode" TEXT;

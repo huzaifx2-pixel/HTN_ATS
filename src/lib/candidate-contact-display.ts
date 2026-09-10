@@ -17,8 +17,11 @@ export type ContactDisplayItem = {
 
 type CandidateContactSource = {
   email?: string | null;
+  altEmail?: string | null;
   phone?: string | null;
   phoneCountryCode?: string | null;
+  altPhone?: string | null;
+  altPhoneCountryCode?: string | null;
   location?: string | null;
   city?: string | null;
   country?: string | null;
@@ -87,6 +90,7 @@ export function getCandidateEmails(candidate: CandidateContactSource): ContactDi
   };
 
   add(candidate.email);
+  add(candidate.altEmail);
 
   const contact = getMetadataContact(candidate.metadata);
   for (const entry of contact?.emails ?? []) {
@@ -127,6 +131,7 @@ export function getCandidatePhones(candidate: CandidateContactSource): ContactDi
   };
 
   add(candidate.phone, candidate.phoneCountryCode);
+  add(candidate.altPhone, candidate.altPhoneCountryCode);
 
   const contact = getMetadataContact(candidate.metadata);
   for (const entry of contact?.phones ?? []) {
@@ -151,4 +156,90 @@ export function getCandidateLocation(candidate: CandidateContactSource): string 
   if (parts.length > 0) return parts.join(", ");
 
   return undefined;
+}
+
+export type CandidateContactSlots = {
+  mainEmail?: string;
+  altEmail?: string;
+  mainPhoneDisplay?: string;
+  mainPhoneRaw?: string | null;
+  mainPhoneCountryCode?: string | null;
+  mainPhoneHref?: string;
+  altPhoneDisplay?: string;
+  altPhoneRaw?: string | null;
+  altPhoneCountryCode?: string | null;
+  altPhoneHref?: string;
+};
+
+function phoneSlot(
+  candidate: CandidateContactSource,
+  phone?: string | null,
+  countryCode?: string | null,
+) {
+  const trimmed = phone?.trim();
+  if (!trimmed) return undefined;
+  const resolvedCode =
+    normalizePhoneCountryCode(countryCode) ??
+    resolvePhoneCountryCode({
+      phone: trimmed,
+      phoneCountryCode: countryCode,
+      country: candidate.country,
+      metadata: candidate.metadata,
+    });
+  const display = formatPhoneDisplay(trimmed, resolvedCode);
+  if (!display) return undefined;
+  return {
+    display,
+    raw: trimmed,
+    countryCode: resolvedCode ?? null,
+    href: formatPhoneTelHref(trimmed, resolvedCode),
+  };
+}
+
+export function getCandidateContactSlots(candidate: CandidateContactSource): CandidateContactSlots {
+  const emails = getCandidateEmails(candidate);
+  const mainEmail = sanitizeCandidateEmail(candidate.email) ?? emails[0]?.value;
+  const altEmail =
+    sanitizeCandidateEmail(candidate.altEmail) ??
+    emails.find((item) => item.value.toLowerCase() !== mainEmail?.toLowerCase())?.value;
+
+  const phones = getCandidatePhones(candidate);
+  const mainPhone =
+    phoneSlot(candidate, candidate.phone, candidate.phoneCountryCode) ??
+    (phones[0]
+      ? {
+          display: phones[0].value,
+          raw: candidate.phone ?? phones[0].value,
+          countryCode: candidate.phoneCountryCode ?? null,
+          href: phones[0].href,
+        }
+      : undefined);
+
+  const altFromColumn = phoneSlot(candidate, candidate.altPhone, candidate.altPhoneCountryCode);
+  const altFromList = phones.find(
+    (item) => item.value.replace(/\D/g, "") !== (mainPhone?.display ?? "").replace(/\D/g, ""),
+  );
+  const altPhone =
+    altFromColumn ??
+    (altFromList
+      ? {
+          display: altFromList.value,
+          raw: candidate.altPhone ?? altFromList.value,
+          countryCode: candidate.altPhoneCountryCode ?? null,
+          href: altFromList.href,
+        }
+      : undefined);
+
+  return {
+    mainEmail,
+    altEmail: altEmail && altEmail.toLowerCase() !== mainEmail?.toLowerCase() ? altEmail : undefined,
+    mainPhoneDisplay: mainPhone?.display,
+    mainPhoneRaw: mainPhone?.raw,
+    mainPhoneCountryCode: mainPhone?.countryCode,
+    mainPhoneHref: mainPhone?.href,
+    altPhoneDisplay: altPhone?.display,
+    altPhoneRaw: altPhone?.raw,
+    altPhoneCountryCode: altPhone?.countryCode,
+    altPhoneHref: altPhone?.href,
+  };
 }

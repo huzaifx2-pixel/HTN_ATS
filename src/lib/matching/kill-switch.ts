@@ -105,17 +105,15 @@ export async function parkMatchWorkItem(id: string) {
 }
 
 async function unparkOrganizationMatchWork(organizationId: string) {
-  await prisma.matchWorkItem.updateMany({
-    where: {
-      organizationId,
-      status: "PENDING",
-      runAfter: { gte: MATCHING_PARKED_UNTIL },
-    },
-    data: {
-      runAfter: new Date(),
-      lastError: null,
-    },
-  });
+  await prisma.$executeRaw`
+    UPDATE "MatchWorkItem"
+    SET
+      "runAfter" = (NOW() AT TIME ZONE 'UTC') - INTERVAL '1 second',
+      "lastError" = NULL
+    WHERE "organizationId" = ${organizationId}
+      AND status = 'PENDING'
+      AND "runAfter" >= ${MATCHING_PARKED_UNTIL}
+  `;
 }
 
 export async function setMatchingKilled(organizationId: string, killed: boolean) {

@@ -110,7 +110,7 @@ export function MatchingJobsTable({
                 ? "Try a job ID, title, or client name."
                 : cursor
                   ? "This page is empty. Go back to the first page to see jobs with matches."
-                  : "Open jobs with a Boolean search will appear here once candidates match on Boolean and location."
+                  : "Open jobs with a Boolean search will appear here once candidates match that Boolean."
             }
           />
         </CardContent>

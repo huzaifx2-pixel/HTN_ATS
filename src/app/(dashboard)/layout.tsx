@@ -1,8 +1,10 @@
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { getSession, getActiveOrganization } from "@/lib/auth/session";
+import { getRoleFeatures } from "@/lib/services/role-feature-service";
 import { AppShell } from "@/components/layout/app-shell";
 import { SidebarNav } from "@/components/layout/sidebar-nav";
+import { FeatureRouteGuard } from "@/components/auth/feature-route-guard";
 import { ShellSidebar, ShellStatusBar, ShellStatusBarFallback, ShellTopBar } from "@/components/layout/shell-metrics";
 import { RealtimeSync } from "@/components/realtime/realtime-sync";
 import { PreviewDrawer } from "@/components/shared/preview-drawer";
@@ -30,12 +32,13 @@ export default async function DashboardLayout({ children }: { children: React.Re
       image: session.user.image,
       role: member.role,
     };
+    const features = await getRoleFeatures(member.organizationId, member.role);
 
     return (
       <AppShell
         user={user}
         sidebar={
-          <Suspense fallback={<SidebarNav user={user} />}>
+          <Suspense fallback={<SidebarNav user={user} role={member.role} features={features} />}>
             <ShellSidebar user={user} userId={session.user.id} organizationId={member.organizationId} />
           </Suspense>
         }
@@ -50,6 +53,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
           </Suspense>
         }
       >
+        <FeatureRouteGuard role={member.role} features={features} />
         <RealtimeSync />
         <Suspense fallback={null}>
           <PreviewDrawer />
