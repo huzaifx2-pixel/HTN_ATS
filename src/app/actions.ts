@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { revalidateOrgPaths } from "@/lib/realtime/sync";
 import * as clientService from "@/lib/services/client-service";
 import * as jobService from "@/lib/services/job-service";
+import { syncJobToHtnSafely, syncJobsToHtnSafely } from "@/lib/services/htn-integration-service";
 import * as candidateService from "@/lib/services/candidate-service";
 import * as pipelineService from "@/lib/services/pipeline-service";
 import * as micro1ReferralService from "@/lib/services/micro1-referral-service";
@@ -83,6 +84,7 @@ export async function createJobAction(formData: FormData) {
     booleanSearch,
     status: "OPEN",
   });
+  await syncJobToHtnSafely(job.id);
   await revalidateOrgPaths(["/jobs"], { organizationId: job.organizationId, type: "jobs" });
   redirect(`/jobs/${job.id}`);
 }
@@ -189,6 +191,7 @@ export async function updateJobAction(id: string, formData: FormData) {
       forceRegenerate: formData.get("booleanSearchForceRegenerate") === "true",
     }),
   });
+  await syncJobToHtnSafely(job.id);
   await revalidateOrgPaths([`/jobs/${id}`, "/jobs"], {
     jobId: id,
     organizationId: job.organizationId,
@@ -599,6 +602,7 @@ export async function bulkJobAction(
 
   if (action === "close") {
     const result = await jobService.bulkCloseJobs(uniqueIds, ctx.organizationId, ctx.userId);
+    await syncJobsToHtnSafely(result.jobIds);
     await revalidateOrgPaths(["/jobs"], { organizationId: ctx.organizationId, type: "jobs" });
     return { message: `Closed ${result.updated} job(s).` };
   }

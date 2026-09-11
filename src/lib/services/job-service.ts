@@ -675,7 +675,7 @@ export async function bulkCloseJobs(jobIds: string[], organizationId: string, ac
     select: { id: true },
   });
 
-  if (jobs.length === 0) return { updated: 0 };
+  if (jobs.length === 0) return { updated: 0, jobIds: [] as string[] };
 
   await prisma.job.updateMany({
     where: { id: { in: jobs.map((job) => job.id) }, organizationId },
@@ -691,7 +691,7 @@ export async function bulkCloseJobs(jobIds: string[], organizationId: string, ac
     })),
   });
 
-  return { updated: jobs.length };
+  return { updated: jobs.length, jobIds: jobs.map((job) => job.id) };
 }
 
 export async function bulkAssignJobOwner(
