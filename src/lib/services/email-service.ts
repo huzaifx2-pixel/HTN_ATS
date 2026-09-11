@@ -659,22 +659,23 @@ export async function sendMatchingHubEmails(input: {
     throw new Error("Select at least one job to email");
   }
 
-  const { enqueueMatchOutreach, hasActiveOutreachMailbox, processMatchOutreachQueue } = await import(
+  const { enqueueMatchOutreachMany, hasActiveOutreachMailbox } = await import(
     "@/lib/services/match-outreach-queue-service"
   );
   if (!(await hasActiveOutreachMailbox(input.organizationId))) {
     throw new Error("Connect Gmail in Integrations to email matching candidates.");
   }
 
+  const recipientLimit = 25000;
   const groups =
     input.kind === "followup"
       ? await getFollowUpRecipientsByJob(input.organizationId, {
           jobIds,
-          limit: jobIds.length === 1 ? 2000 : 10000,
+          limit: recipientLimit,
         })
       : await getPendingMatchRecipientsByJob(input.organizationId, {
           jobIds,
-          limit: jobIds.length === 1 ? 2000 : 10000,
+          limit: recipientLimit,
         });
 
   const total = groups.reduce((sum, group) => sum + group.recipients.length, 0);
@@ -682,66 +683,47 @@ export async function sendMatchingHubEmails(input: {
     throw new Error(input.kind === "followup" ? "No follow-up recipients" : "No remaining matches to email");
   }
 
-  let queued = 0;
-  let skipped = 0;
-  const failures: Array<{ candidateId: string; error: string }> = [];
-
   await input.onProgress?.({
     sent: 0,
     failed: 0,
     skipped: 0,
     total,
-    currentRecipient: groups[0]?.recipients[0]?.name ?? null,
+    currentRecipient: null,
     candidateId: groups[0]?.recipients[0]?.candidateId,
     jobTitle: groups[0]?.jobTitle,
   });
 
-  for (const group of groups) {
-    for (const recipient of group.recipients) {
-      try {
-        if (input.kind === "outreach" && (await candidateAlreadyEmailedForJob(recipient.candidateId, group.jobId))) {
-          skipped++;
-        } else {
-          const result = await enqueueMatchOutreach({
-            organizationId: input.organizationId,
-            jobId: group.jobId,
-            candidateId: recipient.candidateId,
-            templateId: input.templateId,
-            senderUserId: input.userId,
-            subject: input.subject,
-            body: input.body,
-            customLink: input.customLink ?? group.applyLink,
-            autoSent: false,
-          });
-          if (result.created) queued++;
-          else skipped++;
-        }
-      } catch (error) {
-        failures.push({
-          candidateId: recipient.candidateId,
-          error: error instanceof Error ? error.message : "Failed to queue email",
-        });
-      }
+  const toQueue = groups.flatMap((group) =>
+    group.recipients.map((recipient) => ({
+      organizationId: input.organizationId,
+      jobId: group.jobId,
+      candidateId: recipient.candidateId,
+      templateId: input.templateId,
+      senderUserId: input.userId,
+      subject: input.subject,
+      body: input.body,
+      customLink: input.customLink ?? group.applyLink,
+      autoSent: false,
+    })),
+  );
 
-      await input.onProgress?.({
-        sent: queued,
-        failed: failures.length,
-        skipped,
-        total,
-        currentRecipient: recipient.name,
-        candidateId: recipient.candidateId,
-        jobTitle: group.jobTitle,
-      });
-    }
-  }
+  const { queued, skipped } = await enqueueMatchOutreachMany(toQueue);
 
   if (queued > 0) {
-    await processMatchOutreachQueue({ timeBudgetMs: 25_000, maxSends: 8 }).catch((error) => {
-      console.error("[match-outreach] immediate drain failed", error);
-    });
+    void import("@/lib/jobs/match-outreach-scheduler")
+      .then(({ kickMatchOutreachWorker }) => kickMatchOutreachWorker())
+      .catch((error) => console.error("[match-outreach] failed to start background send", error));
   }
 
-  return { sent: queued, queued, failed: failures.length, skipped, total, failures };
+  await input.onProgress?.({
+    sent: queued,
+    failed: 0,
+    skipped,
+    total,
+    currentRecipient: null,
+  });
+
+  return { sent: queued, queued, failed: 0, skipped, total, failures: [] };
 }
 
 async function mapPool<T>(items: T[], concurrency: number, worker: (item: T) => Promise<void>) {

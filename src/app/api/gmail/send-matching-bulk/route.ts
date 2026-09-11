@@ -4,8 +4,6 @@ import { sendMatchingHubEmails } from "@/lib/services/email-service";
 import { uniqueJobIds } from "@/lib/services/match-email-outreach-service";
 import { apiErrorResponse } from "@/lib/api-error";
 
-export const maxDuration = 300;
-
 export async function POST(request: NextRequest) {
   try {
     const ctx = await requirePermission("send_email");
@@ -24,44 +22,20 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Select at least one job" }, { status: 400 });
     }
 
-    const encoder = new TextEncoder();
-    const stream = new ReadableStream({
-      async start(controller) {
-        const send = (data: unknown) => {
-          controller.enqueue(encoder.encode(`${JSON.stringify(data)}\n`));
-        };
-
-        try {
-          const result = await sendMatchingHubEmails({
-            kind,
-            jobIds,
-            templateId: body.templateId,
-            customLink: body.customLink,
-            subject: body.subject,
-            body: body.body,
-            userId: ctx.userId,
-            organizationId: ctx.organizationId,
-            onProgress: async (event) => {
-              send({ type: "progress", ...event });
-            },
-          });
-          send({ type: "done", ...result });
-        } catch (error) {
-          send({
-            type: "error",
-            error: error instanceof Error ? error.message : "Failed to send emails",
-          });
-        } finally {
-          controller.close();
-        }
-      },
+    const result = await sendMatchingHubEmails({
+      kind,
+      jobIds,
+      templateId: body.templateId,
+      customLink: body.customLink,
+      subject: body.subject,
+      body: body.body,
+      userId: ctx.userId,
+      organizationId: ctx.organizationId,
     });
 
-    return new Response(stream, {
-      headers: {
-        "Content-Type": "application/x-ndjson; charset=utf-8",
-        "Cache-Control": "no-cache, no-transform",
-      },
+    return NextResponse.json({
+      type: "done",
+      ...result,
     });
   } catch (error) {
     return apiErrorResponse(error);

@@ -127,8 +127,9 @@ export function OutreachMailboxesPanel({
       <CardContent className="space-y-4">
         <p className="text-sm text-muted-foreground">
           These Google accounts send apply-invite emails to matching candidates for everyone in this ATS.
-          Add as many accounts as you need. Each account uses its own daily limit (default 2000). When one
-          account hits its limit, sending continues on the next account. Invites stay queued until they go out.
+          Add as many accounts as you need. Each account uses its own daily limit (default 2000). If Gmail
+          returns a user-rate-limit on account 1, the next invite goes out from account 2, then 3, then 4,
+          and so on. Invites stay queued until they go out.
         </p>
 
         {added && (

@@ -52,6 +52,28 @@ function asInt(value: unknown, fallback: number) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function dayKey(value: unknown): string | null {
+  if (value == null) return null;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return utcDay(value);
+  const match = String(value).match(/^(\d{4}-\d{2}-\d{2})/);
+  return match?.[1] ?? null;
+}
+
+export const RATE_LIMIT_COOLDOWN_MS = 90_000;
+
+export function isGmailDailySendLimitError(message: string) {
+  return /dailyLimitExceeded|daily (sending )?limit|sending quota|user's sending quota|maximum number of messages/i.test(
+    message,
+  );
+}
+
+export function isGmailPerMinuteQuotaError(message: string) {
+  if (isGmailDailySendLimitError(message)) return false;
+  return /429|user-?\s*rate\s*limit|userRateLimitExceeded|rate-?\s*limit\s*exceeded|rateLimitExceeded|units per minute|per user|total query cost|quota exceeded|quotaExceeded/i.test(
+    message,
+  );
+}
+
 async function queryOutreachRows(organizationId?: string, onlyActive = false): Promise<OutreachRow[]> {
   try {
     const rows = organizationId
@@ -159,7 +181,7 @@ export async function listOutreachMailboxes(organizationId: string) {
   const today = utcDay();
   const boxes = await queryOutreachRows(organizationId);
   return boxes.map((box) => {
-    const sentToday = box.sentCountDate === today ? box.sentCount : 0;
+    const sentToday = dayKey(box.sentCountDate) === today ? box.sentCount : 0;
     return {
       id: box.id,
       email: box.email,
@@ -269,52 +291,115 @@ export async function getOutreachPoolSummary(organizationId: string) {
 }
 
 export type MailboxClaim =
-  | { mailbox: { id: string; email: string; dailySendLimit: number } }
+  | { mailbox: { id: string; email: string; dailySendLimit: number; sentCount: number } }
   | { waitUntil: Date; reason: "delay" | "quota" | "none" };
 
-export async function claimOutreachMailbox(organizationId: string, delayMs: number): Promise<MailboxClaim> {
+export async function claimOutreachMailbox(
+  organizationId: string,
+  delayMs: number,
+  excludeMailboxIds: string[] = [],
+): Promise<MailboxClaim> {
   await importOrgGmailIntoOutreachPool(organizationId);
   const today = utcDay();
+  const excluded = new Set(excludeMailboxIds);
+
+  await prisma.$executeRaw`
+    UPDATE "OutreachMailbox"
+    SET "sentCount" = 0, "sentCountDate" = ${today}, "updatedAt" = NOW()
+    WHERE "organizationId" = ${organizationId}
+      AND "isActive" = true
+      AND ("sentCountDate" IS NULL OR "sentCountDate" <> ${today})
+  `;
+
   const mailboxes = await queryOutreachRows(organizationId, true);
   if (mailboxes.length === 0) {
     return { waitUntil: new Date(Date.now() + 15_000), reason: "none" };
   }
 
-  for (const box of mailboxes) {
-    let sentCount = box.sentCountDate === today ? box.sentCount : 0;
-    if (box.sentCountDate !== today) {
-      await prisma.$executeRaw`
-        UPDATE "OutreachMailbox"
-        SET "sentCount" = 0, "sentCountDate" = ${today}, "updatedAt" = NOW()
-        WHERE id = ${box.id}
-      `;
-      sentCount = 0;
-    }
-    if (sentCount >= box.dailySendLimit) continue;
+  let nextDelay: Date | null = null;
+  const now = Date.now();
+  let underCap = 0;
 
-    if (box.lastSentAt) {
-      const readyAt = new Date(new Date(box.lastSentAt).getTime() + delayMs);
-      if (readyAt.getTime() > Date.now()) {
-        return { waitUntil: readyAt, reason: "delay" };
+  for (const box of mailboxes) {
+    const sentCount = dayKey(box.sentCountDate) === today ? box.sentCount : 0;
+    if (sentCount < box.dailySendLimit) underCap++;
+
+    if (excluded.has(box.id)) {
+      const readyAt = new Date(Date.now() + RATE_LIMIT_COOLDOWN_MS);
+      if (!nextDelay || readyAt.getTime() < nextDelay.getTime()) nextDelay = readyAt;
+      continue;
+    }
+    if (sentCount >= box.dailySendLimit) {
+      console.info(
+        `[outreach] skip ${box.email}: daily cap ${sentCount}/${box.dailySendLimit}`,
+      );
+      continue;
+    }
+
+    const rateLimited = isGmailPerMinuteQuotaError(box.lastError ?? "");
+    const cooldownMs = rateLimited ? Math.max(delayMs, RATE_LIMIT_COOLDOWN_MS) : delayMs;
+    if (box.lastSentAt && cooldownMs > 0) {
+      const readyAt = new Date(new Date(box.lastSentAt).getTime() + cooldownMs);
+      if (readyAt.getTime() > now) {
+        if (!nextDelay || readyAt.getTime() < nextDelay.getTime()) nextDelay = readyAt;
+        console.info(`[outreach] skip ${box.email}: cooling down until ${readyAt.toISOString()}`);
+        continue;
       }
     }
 
+    console.info(
+      `[outreach] using ${box.email} (${sentCount}/${box.dailySendLimit})`,
+    );
     return {
-      mailbox: { id: box.id, email: box.email, dailySendLimit: box.dailySendLimit },
+      mailbox: {
+        id: box.id,
+        email: box.email,
+        dailySendLimit: box.dailySendLimit,
+        sentCount,
+      },
     };
   }
 
+  if (nextDelay) {
+    return { waitUntil: nextDelay, reason: "delay" };
+  }
+  if (underCap > 0) {
+    return { waitUntil: new Date(Date.now() + RATE_LIMIT_COOLDOWN_MS), reason: "delay" };
+  }
   return { waitUntil: startOfNextUtcDay(), reason: "quota" };
+}
+
+export async function markOutreachMailboxDailyCap(mailboxId: string, message?: string) {
+  const today = utcDay();
+  const box = await queryOutreachById(mailboxId);
+  const limit = box?.dailySendLimit ?? DEFAULT_DAILY_SEND_LIMIT;
+  const text = (message ?? "Daily send limit reached").slice(0, 500);
+  await prisma.$executeRaw`
+    UPDATE "OutreachMailbox"
+    SET "sentCount" = ${limit}, "sentCountDate" = ${today}, "lastSentAt" = NOW(), "lastError" = ${text}, "updatedAt" = NOW()
+    WHERE id = ${mailboxId}
+  `;
+}
+
+export async function markOutreachMailboxCooldown(mailboxId: string, message: string) {
+  const text = message.slice(0, 500);
+  await prisma.$executeRaw`
+    UPDATE "OutreachMailbox"
+    SET "lastSentAt" = NOW(), "lastError" = ${text}, "updatedAt" = NOW()
+    WHERE id = ${mailboxId}
+  `;
 }
 
 export async function recordOutreachSend(mailboxId: string) {
   const today = utcDay();
-  const box = await queryOutreachById(mailboxId);
-  if (!box) return;
-  const sentCount = box.sentCountDate === today ? box.sentCount + 1 : 1;
   await prisma.$executeRaw`
     UPDATE "OutreachMailbox"
-    SET "sentCount" = ${sentCount}, "sentCountDate" = ${today}, "lastSentAt" = NOW(), "lastError" = NULL, "updatedAt" = NOW()
+    SET
+      "sentCount" = CASE WHEN "sentCountDate" = ${today} THEN "sentCount" + 1 ELSE 1 END,
+      "sentCountDate" = ${today},
+      "lastSentAt" = NOW(),
+      "lastError" = NULL,
+      "updatedAt" = NOW()
     WHERE id = ${mailboxId}
   `;
 }
@@ -339,11 +424,6 @@ export async function markOutreachMailboxError(mailboxId: string, message: strin
 function isGmailUnauthorized(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   return /401|invalid credentials|unauthenticated|invalid_grant|session expired|reconnect gmail/i.test(message);
-}
-
-function isGmailRateLimited(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  return /429|rateLimitExceeded|userRateLimitExceeded/i.test(message);
 }
 
 async function getValidMailboxToken(mailboxId: string, forceRefresh = false): Promise<MailboxToken> {
@@ -395,10 +475,6 @@ export async function sendEmailAsOutreachMailbox(
       lastError = error;
       if (isGmailUnauthorized(error) && attempt === 0) {
         current = await getValidMailboxToken(mailboxId, true);
-        continue;
-      }
-      if (isGmailRateLimited(error)) {
-        await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
         continue;
       }
       throw error;

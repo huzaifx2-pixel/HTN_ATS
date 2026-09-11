@@ -16,6 +16,10 @@ async function runMatchOutreachTick() {
   }
 }
 
+export function kickMatchOutreachWorker() {
+  void runMatchOutreachTick();
+}
+
 export function startMatchOutreachScheduler() {
   if (schedulerStarted) return;
   schedulerStarted = true;
@@ -23,7 +27,7 @@ export function startMatchOutreachScheduler() {
 
   setTimeout(() => {
     void runMatchOutreachTick();
-  }, 15_000);
+  }, 2_000);
 
   intervalHandle = setInterval(() => {
     void runMatchOutreachTick();

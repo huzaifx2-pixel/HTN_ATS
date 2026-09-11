@@ -6,6 +6,9 @@ export async function registerNode() {
   const { applyMaxListeners } = await import("@/lib/runtime/apply-max-listeners");
   applyMaxListeners();
 
+  const { ensureLocalPostgres } = await import("@/lib/db/ensure-local-postgres");
+  await ensureLocalPostgres();
+
   const { ensureRagInfrastructureProbe } = await import("@/lib/rag/infrastructure");
   await ensureRagInfrastructureProbe();
 

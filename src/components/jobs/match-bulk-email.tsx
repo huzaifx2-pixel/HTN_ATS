@@ -17,7 +17,6 @@ import {
   EmailMessageEditor,
   type EmailMessageEditorHandle,
 } from "@/components/email/email-message-editor";
-import { EmailSendProgress } from "@/components/email/email-send-progress";
 import { applyMergeFields, normalizeApplyUrl } from "@/lib/constants/email";
 import { isHtmlEmailBody, hasEmailBodyContent } from "@/lib/email-body-html";
 import { insertTextAtCursor } from "@/lib/insert-at-cursor";
@@ -164,9 +163,6 @@ export function MatchBulkEmail({
     setLoading(true);
     resetState();
 
-    const total = recipients.length;
-    setSendProgress({ sent: 0, failed: 0, skipped: 0, total, currentRecipient: recipients[0]?.name ?? null });
-
     try {
       const res = await fetch("/api/gmail/send-matching-bulk", {
         method: "POST",
@@ -180,91 +176,24 @@ export function MatchBulkEmail({
           body,
         }),
       });
-
-      const contentType = res.headers.get("content-type") ?? "";
-      if (!res.body || !contentType.includes("ndjson")) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error((data as { error?: string }).error ?? "Failed to send emails");
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        queued?: number;
+        sent?: number;
+        skipped?: number;
+      };
+      if (!res.ok) {
+        throw new Error(data.error ?? "Failed to queue emails");
       }
-
-      const namesById = new Map(recipients.map((recipient) => [recipient.candidateId, recipient.name]));
-      let sent = 0;
-      let failed = 0;
-      let skipped = 0;
-      const failureMessages: string[] = [];
-      let buffer = "";
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          let event: {
-            type?: string;
-            sent?: number;
-            failed?: number;
-            skipped?: number;
-            total?: number;
-            currentRecipient?: string | null;
-            candidateId?: string;
-            error?: string;
-            failures?: Array<{ candidateId: string; error: string }>;
-          };
-          try {
-            event = JSON.parse(line);
-          } catch {
-            continue;
-          }
-
-          if (event.type === "error") {
-            throw new Error(event.error ?? "Failed to send emails");
-          }
-
-          if (event.type === "progress") {
-            sent = event.sent ?? sent;
-            failed = event.failed ?? failed;
-            skipped = event.skipped ?? skipped;
-            setSendProgress({
-              sent,
-              failed,
-              skipped,
-              total: event.total ?? total,
-              currentRecipient: event.currentRecipient ?? namesById.get(event.candidateId ?? "") ?? null,
-            });
-          }
-
-          if (event.type === "done") {
-            sent = event.sent ?? sent;
-            failed = event.failed ?? failed;
-            skipped = event.skipped ?? skipped;
-            for (const failure of event.failures ?? []) {
-              const name = namesById.get(failure.candidateId) ?? failure.candidateId;
-              failureMessages.push(`${name}: ${failure.error}`);
-            }
-            setSendProgress({ sent, failed, skipped, total, currentRecipient: null });
-          }
-        }
-      }
-
-      const parts = [`Queued ${sent}`];
-      if (failed) parts.push(`${failed} failed`);
-      setResult(parts.join(", "));
-      if (failureMessages.length > 0) {
-        setError(failureMessages.slice(0, 3).join(" · "));
-      }
-
+      const queued = data.queued ?? data.sent ?? 0;
+      const skipped = data.skipped ?? 0;
+      const parts = [`Queued ${queued.toLocaleString()} invites to send in the background`];
+      if (skipped) parts.push(`${skipped.toLocaleString()} already queued or emailed`);
+      setResult(parts.join(". "));
       router.refresh();
-      if (failed === 0) {
-        setTimeout(() => setOpen(false), 2500);
-      }
+      setTimeout(() => setOpen(false), 1500);
     } catch (sendError) {
-      setError(sendError instanceof Error ? sendError.message : "Failed to send");
+      setError(sendError instanceof Error ? sendError.message : "Failed to queue emails");
     } finally {
       setLoading(false);
     }
@@ -282,7 +211,6 @@ export function MatchBulkEmail({
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (loading) return;
         setOpen(next);
         if (next) {
           setEditedApplyLink(applyLink);
@@ -303,23 +231,13 @@ export function MatchBulkEmail({
         </DialogHeader>
         <div className="space-y-4 text-sm">
           <p className="text-xs text-muted-foreground">
-            From: {userEmail} · Invites are queued and sent with a delay across outreach Gmail accounts.
+            From: {userEmail} · Clicking send queues invites and closes this window. Emails go out in the background.
           </p>
           <p className="text-xs">
             <span className="font-medium">{jobLocation}</span>
             {" · "}
             <span className="font-medium">{jobSalary}</span>
           </p>
-
-          {sendProgress && (
-            <EmailSendProgress
-              sent={sendProgress.sent}
-              failed={sendProgress.failed}
-              skipped={sendProgress.skipped}
-              total={sendProgress.total}
-              currentRecipient={sendProgress.currentRecipient}
-            />
-          )}
 
           <div className="rounded-lg border bg-muted/30 p-3 text-xs space-y-1 max-h-28 overflow-y-auto">
             <div className="font-medium">
@@ -429,7 +347,7 @@ export function MatchBulkEmail({
             className="w-full"
           >
             {loading
-              ? `Sending ${sendProgress?.sent ?? 0} of ${recipients.length}…`
+              ? "Queuing invites…"
               : `Send to all ${recipients.length} candidate${recipients.length === 1 ? "" : "s"}`}
           </Button>
         </div>
