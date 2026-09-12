@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatCard } from "@/components/shared/dashboard-widgets";
 import { PipelineFunnel, ActivityFeed } from "@/components/shared/pipeline-funnel";
 import { getDashboardData, getRecentActivity, getRecruiterProductivity } from "@/lib/services/analytics-service";
+import { getJobActivityFeed } from "@/lib/activity/queries";
 import { getMarketingDashboardStats } from "@/lib/services/marketing-campaign-service";
 import { prisma } from "@/lib/db";
 import { withPagePerf } from "@/lib/perf";
@@ -38,29 +39,16 @@ function jobStatusHref(status: string) {
 }
 
 async function getRecentJobActivities(organizationId: string) {
-  const jobs = await prisma.job.findMany({
-    where: { organizationId },
-    select: { id: true },
-    take: 50,
-  });
-  if (jobs.length === 0) return [];
-  const activities = await prisma.auditLog.findMany({
-    where: {
-      organizationId,
-      entityType: "Job",
-      entityId: { in: jobs.map((j) => j.id) },
-    },
-    orderBy: { createdAt: "desc" },
-    take: 6,
-    include: { actor: { select: { name: true } } },
-  });
-  return activities.map((log) => ({
-    id: log.id,
-    jobId: log.entityId,
-    action: log.action,
-    detail: log.actor?.name ?? "System",
-    createdAt: log.createdAt,
-  }));
+  const rows = await getJobActivityFeed(organizationId, 6);
+  return rows
+    .filter((row) => row.entityHref?.startsWith("/jobs/"))
+    .map((row) => ({
+      id: row.id,
+      jobId: row.entityHref!.replace("/jobs/", ""),
+      action: row.actionLabel,
+      detail: [row.actorName, row.entityLabel].filter(Boolean).join(" · "),
+      createdAt: row.createdAt,
+    }));
 }
 
 export async function ExecutiveDashboard({ organizationId }: { organizationId: string }) {
@@ -98,12 +86,12 @@ export async function ExecutiveDashboard({ organizationId }: { organizationId: s
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
-          <StatCard label="Open Jobs" value={stats.openJobs} icon={Briefcase} trend={12} href="/jobs" />
-          <StatCard label="Total Candidates" value={stats.activeCandidates} icon={Users} trend={8.3} href="/candidates" />
-          <StatCard label="Applications" value={stats.candidatesMatched} icon={FileText} trend={15.6} href="/analytics" />
-          <StatCard label="Submissions" value={submissions} icon={Send} trend={10.2} href="/jobs" />
-          <StatCard label="Placements" value={stats.placements} icon={Trophy} trend={14.3} href="/analytics" />
-          <StatCard label="Emails Sent" value={stats.emailsSent} icon={DollarSign} trend={18.7} href="/analytics/email" />
+          <StatCard label="Open Jobs" value={stats.openJobs} icon={Briefcase} href="/jobs" />
+          <StatCard label="Total Candidates" value={stats.activeCandidates} icon={Users} href="/candidates" />
+          <StatCard label="Applications" value={stats.candidatesMatched} icon={FileText} href="/analytics" />
+          <StatCard label="Submissions" value={submissions} icon={Send} href="/jobs" />
+          <StatCard label="Placements" value={stats.placements} icon={Trophy} href="/analytics" />
+          <StatCard label="Emails Sent" value={stats.emailsSent} icon={DollarSign} href="/analytics/email" />
         </div>
 
         <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-4">

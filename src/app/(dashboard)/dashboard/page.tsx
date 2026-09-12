@@ -24,7 +24,7 @@ export default async function DashboardPage({
 
   return (
     <div className="space-y-4">
-      <div className="flex gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Link
           href="/dashboard"
           className={cn(
@@ -44,6 +44,12 @@ export default async function DashboardPage({
           <Suspense fallback="Pending Match Email">
             <PendingEmailCount organizationId={member.organizationId} />
           </Suspense>
+        </Link>
+        <Link
+          href="/dashboard/preview"
+          className="rounded-full border border-violet-200 bg-violet-50 px-4 py-1.5 text-sm font-medium text-violet-700 transition-colors hover:bg-violet-100"
+        >
+          Preview new dashboard
         </Link>
       </div>
 

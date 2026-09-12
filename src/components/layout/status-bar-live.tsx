@@ -69,7 +69,7 @@ export function StatusBarLive({ initial }: { initial: StatusBarSnapshot }) {
 
 export function StatusBarFallback() {
   return (
-    <footer className="flex h-10 items-center justify-between border-t border-brand-900 bg-brand-900 px-6 text-xs text-white/50">
+    <footer className="flex h-10 items-center justify-between border-t border-white/10 bg-[#222222] px-6 text-xs text-[#666666]">
       <span>Loading status…</span>
     </footer>
   );
