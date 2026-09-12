@@ -9,10 +9,10 @@ import { cn } from "@/lib/utils";
 export type SystemHealth = "operational" | "stale" | "degraded" | "disconnected";
 
 const HEALTH_COPY: Record<SystemHealth, { label: string; className: string }> = {
-  operational: { label: "All Systems Operational", className: "text-brand-300" },
+  operational: { label: "All Systems Operational", className: "text-[#5FAFA8]" },
   degraded: { label: "Gmail Sync Delayed", className: "text-amber-300" },
   stale: { label: "Gmail Sync Stale", className: "text-amber-300" },
-  disconnected: { label: "Gmail Not Connected", className: "text-white/50" },
+  disconnected: { label: "Gmail Not Connected", className: "text-[#666666]" },
 };
 
 export function StatusBarView({
@@ -42,15 +42,15 @@ export function StatusBarView({
   const syncIsStale = health === "stale" || health === "degraded";
   const gmailDotClass = gmailConnected
     ? health === "operational"
-      ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.85)]"
+      ? "bg-[#5FAFA8] shadow-[0_0_8px_rgba(95,175,168,0.85)]"
       : "bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.7)]"
-    : "bg-white/30";
+    : "bg-[#666666]";
 
   return (
-    <footer className="flex h-10 items-center justify-between border-t border-brand-900 bg-brand-900 px-6 text-xs text-white/80">
+    <footer className="flex h-10 items-center justify-between border-t border-white/10 bg-[#222222] px-6 text-xs text-white">
       <div className="flex items-center gap-6">
-        <div className="flex items-center gap-2">
-          <Mail className="h-3.5 w-3.5" />
+        <div className="flex items-center gap-2 text-white/80">
+          <Mail className="h-3.5 w-3.5 text-[#5FAFA8]" />
           <span>
             {gmailImportsToday} Gmail import{gmailImportsToday === 1 ? "" : "s"} today
           </span>
@@ -64,7 +64,7 @@ export function StatusBarView({
             )}
             aria-hidden
           />
-          <span className={gmailConnected ? "text-brand-300" : "text-white/50"}>
+          <span className={gmailConnected ? "text-[#5FAFA8]" : "text-[#666666]"}>
             Gmail {gmailConnected ? "Connected" : "Not Connected"}
             {gmailConnected && lastSyncLabel ? (
               <>
@@ -76,21 +76,21 @@ export function StatusBarView({
             ) : null}
           </span>
           {syncIsStale && gmailConnected ? (
-            <Link href="/candidates/inbox" className="text-brand-200 underline-offset-2 hover:underline">
+            <Link href="/candidates/inbox" className="text-[#5FAFA8] underline-offset-2 hover:underline">
               Sync now
             </Link>
           ) : null}
         </div>
       </div>
       <div className="flex items-center gap-6">
-        <div className="flex items-center gap-2">
-          <HardDrive className="h-3.5 w-3.5" />
+        <div className="flex items-center gap-2 text-white/80">
+          <HardDrive className="h-3.5 w-3.5 text-[#5FAFA8]" />
           <span>
             {formatBytes(storageUsed)} / {formatBytes(storageLimit)} ({storagePct}%)
           </span>
         </div>
-        <div className="flex items-center gap-2">
-          <Users className="h-3.5 w-3.5" />
+        <div className="flex items-center gap-2 text-white/80">
+          <Users className="h-3.5 w-3.5 text-[#5FAFA8]" />
           <span>
             {onlineCount}/{teamMemberCount} online
           </span>

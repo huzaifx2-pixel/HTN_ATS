@@ -35,64 +35,63 @@ async function loadDashboardSnapshot(organizationId: string): Promise<DashboardS
   today.setHours(0, 0, 0, 0);
   const inSevenDays = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
-  const rows = await prisma.$queryRaw<Array<Record<string, number | bigint>>>`
-    SELECT
-      (SELECT COUNT(*)::int FROM "Job" WHERE "organizationId" = ${organizationId}) AS "totalJobs",
-      (SELECT COUNT(*)::int FROM "Job" WHERE "organizationId" = ${organizationId} AND status = 'OPEN') AS "openJobs",
-      (SELECT COUNT(*)::int FROM "Candidate" WHERE "organizationId" = ${organizationId} AND "deletedAt" IS NULL) AS "activeCandidates",
-      (SELECT COUNT(*)::int FROM "CandidateDraft" WHERE "organizationId" = ${organizationId} AND status = 'PENDING') AS "pendingInbox",
-      (SELECT COUNT(*)::int FROM "Job"
-        WHERE "organizationId" = ${organizationId}
-          AND status = 'OPEN'
-          AND "expiresAt" >= ${today}
-          AND "expiresAt" <= ${inSevenDays}) AS "expiringJobs",
-      (SELECT COUNT(*)::int FROM "AuditLog"
-        WHERE "organizationId" = ${organizationId}
-          AND action IN ('email.auto_failed', 'gmail.sync_failed')
-          AND "createdAt" >= ${today}) AS "emailsFailedToday",
-      (SELECT COUNT(*)::int FROM "CandidateActivity" ca
-        INNER JOIN "Candidate" c ON c.id = ca."candidateId"
-        WHERE c."organizationId" = ${organizationId}
-          AND ca.action IN ('candidate.created', 'resume.version_added', 'resume.uploaded')
-          AND ca."createdAt" >= ${today}) AS "resumesImportedToday"
-  `;
-
-  const matchRows = await prisma.$queryRaw<Array<{
-    matchedToday: number | bigint;
-    candidatesMatched: number | bigint;
-    followUpCandidates: number | bigint;
-  }>>`
-    SELECT
-      COUNT(*) FILTER (WHERE jm."computedAt" >= ${today})::int AS "matchedToday",
-      COUNT(*) FILTER (WHERE jm.score >= 70)::int AS "candidatesMatched",
-      COUNT(DISTINCT jm."candidateId") FILTER (WHERE jm.score >= 70)::int AS "followUpCandidates"
-    FROM "Job" j
-    INNER JOIN "JobMatch" jm ON jm."jobId" = j.id
-    WHERE j."organizationId" = ${organizationId}
-  `;
-
-  const appRows = await prisma.$queryRaw<Array<{
-    placements: number | bigint;
-    interviews: number | bigint;
-  }>>`
-    SELECT
-      COUNT(*) FILTER (WHERE a.stage = 'PLACEMENT')::int AS "placements",
-      COUNT(*) FILTER (WHERE a.stage = 'INTERVIEW_COMPLETED')::int AS "interviews"
-    FROM "Job" j
-    INNER JOIN "Application" a ON a."jobId" = j.id
-    WHERE j."organizationId" = ${organizationId}
-  `;
-
-  const emailRows = await prisma.$queryRaw<Array<{
-    emailsSent: number | bigint;
-    emailsSentToday: number | bigint;
-  }>>`
-    SELECT
-      COUNT(*) FILTER (WHERE e."sentAt" IS NOT NULL)::int AS "emailsSent",
-      COUNT(*) FILTER (WHERE e."sentAt" >= ${today})::int AS "emailsSentToday"
-    FROM "EmailMessage" e
-    WHERE e."jobId" IN (SELECT id FROM "Job" WHERE "organizationId" = ${organizationId})
-  `;
+  const [rows, matchRows, appRows, emailRows] = await Promise.all([
+    prisma.$queryRaw<Array<Record<string, number | bigint>>>`
+      SELECT
+        (SELECT COUNT(*)::int FROM "Job" WHERE "organizationId" = ${organizationId}) AS "totalJobs",
+        (SELECT COUNT(*)::int FROM "Job" WHERE "organizationId" = ${organizationId} AND status = 'OPEN') AS "openJobs",
+        (SELECT COUNT(*)::int FROM "Candidate" WHERE "organizationId" = ${organizationId} AND "deletedAt" IS NULL) AS "activeCandidates",
+        (SELECT COUNT(*)::int FROM "CandidateDraft" WHERE "organizationId" = ${organizationId} AND status = 'PENDING') AS "pendingInbox",
+        (SELECT COUNT(*)::int FROM "Job"
+          WHERE "organizationId" = ${organizationId}
+            AND status = 'OPEN'
+            AND "expiresAt" >= ${today}
+            AND "expiresAt" <= ${inSevenDays}) AS "expiringJobs",
+        (SELECT COUNT(*)::int FROM "AuditLog"
+          WHERE "organizationId" = ${organizationId}
+            AND action IN ('email.auto_failed', 'gmail.sync_failed')
+            AND "createdAt" >= ${today}) AS "emailsFailedToday",
+        (SELECT COUNT(*)::int FROM "CandidateActivity" ca
+          INNER JOIN "Candidate" c ON c.id = ca."candidateId"
+          WHERE c."organizationId" = ${organizationId}
+            AND ca.action IN ('candidate.created', 'resume.version_added', 'resume.uploaded')
+            AND ca."createdAt" >= ${today}) AS "resumesImportedToday"
+    `,
+    prisma.$queryRaw<Array<{
+      matchedToday: number | bigint;
+      candidatesMatched: number | bigint;
+      followUpCandidates: number | bigint;
+    }>>`
+      SELECT
+        COUNT(*) FILTER (WHERE jm."computedAt" >= ${today})::int AS "matchedToday",
+        COUNT(*) FILTER (WHERE jm.score >= 70)::int AS "candidatesMatched",
+        COUNT(DISTINCT jm."candidateId") FILTER (WHERE jm.score >= 70)::int AS "followUpCandidates"
+      FROM "Job" j
+      INNER JOIN "JobMatch" jm ON jm."jobId" = j.id
+      WHERE j."organizationId" = ${organizationId}
+    `,
+    prisma.$queryRaw<Array<{
+      placements: number | bigint;
+      interviews: number | bigint;
+    }>>`
+      SELECT
+        COUNT(*) FILTER (WHERE a.stage = 'PLACEMENT')::int AS "placements",
+        COUNT(*) FILTER (WHERE a.stage = 'INTERVIEW_COMPLETED')::int AS "interviews"
+      FROM "Job" j
+      INNER JOIN "Application" a ON a."jobId" = j.id
+      WHERE j."organizationId" = ${organizationId}
+    `,
+    prisma.$queryRaw<Array<{
+      emailsSent: number | bigint;
+      emailsSentToday: number | bigint;
+    }>>`
+      SELECT
+        COUNT(*) FILTER (WHERE e."sentAt" IS NOT NULL)::int AS "emailsSent",
+        COUNT(*) FILTER (WHERE e."sentAt" >= ${today})::int AS "emailsSentToday"
+      FROM "EmailMessage" e
+      WHERE e."jobId" IN (SELECT id FROM "Job" WHERE "organizationId" = ${organizationId})
+    `,
+  ]);
 
   const base = rows[0] ?? {};
   const matches = matchRows[0] ?? { matchedToday: 0, candidatesMatched: 0, followUpCandidates: 0 };
